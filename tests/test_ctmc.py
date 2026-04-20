@@ -3,7 +3,13 @@
 import numpy as np
 import pytest
 
-from src.ctmc import failure_rate, stationary_distribution
+from src.ctmc import (
+    failure_rate,
+    failure_rate_rebalanced,
+    generator_matrix,
+    stationary_distribution,
+    stationary_distribution_rebalanced,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -134,3 +140,115 @@ def test_failure_rate_rejects_bad_inputs():
         failure_rate(-1.0, 1.0, 5)
     with pytest.raises(ValueError):
         failure_rate(np.nan, 1.0, 5)
+
+
+# ---------------------------------------------------------------------------
+# Rebalanced chain (notebook 02 extension)
+# ---------------------------------------------------------------------------
+
+
+def test_generator_rows_sum_to_zero():
+    for theta in [0.0, 0.5, 3.0, 100.0]:
+        Q = generator_matrix(lam=2.0, mu=3.0, c=10, theta=theta, target=5)
+        assert np.allclose(Q.sum(axis=1), 0.0, atol=1e-12)
+        # Off-diagonals nonnegative, diagonal nonpositive.
+        off = Q - np.diag(np.diag(Q))
+        assert np.all(off >= -1e-15)
+        assert np.all(np.diag(Q) <= 1e-15)
+
+
+def test_generator_rejects_bad_inputs():
+    with pytest.raises(ValueError):
+        generator_matrix(lam=-1.0, mu=1.0, c=5, theta=0.1, target=2)
+    with pytest.raises(ValueError):
+        generator_matrix(lam=1.0, mu=-1.0, c=5, theta=0.1, target=2)
+    with pytest.raises(ValueError):
+        generator_matrix(lam=1.0, mu=1.0, c=5, theta=-0.1, target=2)
+    with pytest.raises(ValueError):
+        generator_matrix(lam=1.0, mu=1.0, c=5, theta=0.1, target=-1)
+    with pytest.raises(ValueError):
+        generator_matrix(lam=1.0, mu=1.0, c=5, theta=0.1, target=6)
+    with pytest.raises(ValueError):
+        generator_matrix(lam=np.inf, mu=1.0, c=5, theta=0.1, target=2)
+
+
+@pytest.mark.parametrize("lam,mu,c", [
+    (5.0, 2.0, 12),   # rho < 1  (source-like)
+    (3.0, 3.0, 8),    # rho = 1  (balanced)
+    (2.0, 6.0, 15),   # rho > 1  (sink-like)
+])
+def test_rebalanced_matches_closed_form_when_theta_zero(lam, mu, c):
+    # With theta=0, the rebalancing column is never touched and we should
+    # recover the closed-form geometric distribution. Check against the
+    # base-model API across all three rho regimes.
+    target = c // 2  # arbitrary; irrelevant when theta=0
+    pi_reb = stationary_distribution_rebalanced(lam, mu, c, theta=0.0, target=target)
+    rho = mu / lam
+    pi_cf  = stationary_distribution(rho, c)
+    assert pi_reb.shape == pi_cf.shape
+    assert np.allclose(pi_reb, pi_cf, atol=1e-10), (
+        f"max |diff| = {np.abs(pi_reb - pi_cf).max():.2e} for "
+        f"lam={lam}, mu={mu}, c={c}"
+    )
+
+
+@pytest.mark.parametrize("theta", [0.1, 1.0, 10.0])
+@pytest.mark.parametrize("lam,mu,c", [
+    (4.0, 2.0, 20),
+    (3.0, 3.0, 10),
+    (1.0, 5.0, 30),
+])
+def test_rebalanced_pi_is_valid_distribution(theta, lam, mu, c):
+    target = c // 2
+    pi = stationary_distribution_rebalanced(lam, mu, c, theta, target)
+    assert pi.shape == (c + 1,)
+    assert np.all(pi >= 0.0)
+    assert np.isclose(pi.sum(), 1.0, atol=1e-12)
+
+
+def test_failure_rate_rebalanced_monotone_nonincreasing_in_theta():
+    # Core property the greedy optimizer relies on: more rebalancing
+    # cannot hurt. Check at three representative stations.
+    station_cases = [
+        (4.0, 2.0, 20),   # source (rho < 1)
+        (3.0, 3.0, 10),   # balanced
+        (1.0, 8.0, 25),   # sink (rho > 1)
+    ]
+    theta_grid = np.geomspace(0.01, 50.0, 40)
+    for lam, mu, c in station_cases:
+        target = c // 2
+        F = np.array([failure_rate_rebalanced(lam, mu, c, t, target)
+                      for t in theta_grid])
+        # Strict non-increasing (allow floating-point wiggle of 1e-10).
+        diffs = np.diff(F)
+        assert np.all(diffs <= 1e-10), (
+            f"F not non-increasing for (lam={lam}, mu={mu}, c={c}); "
+            f"max positive diff = {diffs.max():.3e}"
+        )
+
+
+def test_rebalanced_pi_concentrates_on_target_as_theta_huge():
+    # theta -> infinity should drown out birth/death transitions and
+    # concentrate pi on state t.
+    lam, mu, c = 3.0, 5.0, 12
+    for target in [0, 3, c // 2, c]:
+        pi = stationary_distribution_rebalanced(lam, mu, c, theta=10_000.0, target=target)
+        assert pi[target] > 0.999, (
+            f"theta->inf should concentrate on target={target}; "
+            f"got pi[target]={pi[target]:.6f}"
+        )
+
+
+def test_failure_rate_rebalanced_matches_base_when_theta_zero():
+    # End-to-end sanity: failure_rate_rebalanced(theta=0) == failure_rate().
+    for lam, mu, c in [(5.0, 2.0, 12), (3.0, 3.0, 8), (2.0, 6.0, 15)]:
+        F_base = failure_rate(lam, mu, c)
+        F_reb  = failure_rate_rebalanced(lam, mu, c, theta=0.0, target=c // 2)
+        assert np.isclose(F_base, F_reb, atol=1e-10, rtol=1e-12)
+
+
+def test_failure_rate_rebalanced_rejects_bad_inputs():
+    with pytest.raises(ValueError):
+        failure_rate_rebalanced(lam=0.0, mu=1.0, c=5, theta=0.1, target=2)
+    with pytest.raises(ValueError):
+        failure_rate_rebalanced(lam=1.0, mu=0.0, c=5, theta=0.1, target=2)
