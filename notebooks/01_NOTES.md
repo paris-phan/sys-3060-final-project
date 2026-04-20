@@ -36,3 +36,66 @@
 - `uv run pytest tests/test_ctmc.py` — 14 passing.
 - `uv run jupyter nbconvert --to notebook --execute --inplace notebooks/01_exploration_and_base_model.ipynb` — runs clean from a fresh kernel.
 - Notebook is rebuilt from `notebooks/_build_notebook.py`; if you edit cells interactively and want the changes permanent, re-run the builder or drop the builder and edit the .ipynb directly. Keeping both is fine for now since the notebook source is relatively stable.
+
+## Routing-aware re-rank (2026-04-20)
+
+### Why we re-ranked
+
+The original Part 1 ranked stations by `|log(mu/lam)| × volume` and expanded each seed via its 2–3 nearest geographic neighbours within 500 m. The top cluster came back as **Dock 72 Way & Market St + Flushing Ave & Vanderbilt Ave + Clinton Ave & Flushing Ave + 5 St & Market St** — four stations in the Brooklyn Navy Yard, all with `rho ∈ [1.3, 26]`, i.e. **all sinks**. No source stations. That's a dead cluster for the reallocation story: every member wants more dock capacity, there's nobody to pull from, and the interesting tradeoff (source stockouts vs sink dockblocks) disappears. The previous `F_base = 42.0/h` was ~100% dockblocks, 0% stockouts — a flat benchmark.
+
+### What we changed
+
+1. **Three-way station classification** by `rho = mu / lam`: `source` if `rho < 0.7`, `sink` if `rho > 1.5`, `balanced` otherwise. Of the 1,542 eligible stations, Sept 2024 gives us 675 sources, 311 sinks, 556 balanced.
+2. **Trip-routing matrix** built by `groupby(start_id, end_id)` on the 7–10am weekday slice: 171,647 non-zero flows over 595,507 intra-universe trips.
+3. **Seed on sinks only** (20 biggest by `(lam+mu) × |log rho|`), then for each seed pull the **top-3 origins by trip count into the seed**. Require at least one of those origins to be a real source (`rho < 0.7`); else skip.
+4. Optionally add one nearby (`≤ 1 km`) secondary sink that shares origin inflow with the seed. Cap at 5 members.
+5. Score by `total_events × balance_factor × mean(|log rho|)` where `balance_factor = min(V_src, V_snk) / max(V_src, V_snk) ∈ (0, 1]` — the critical fix. The old scorer did not penalize monocultures of sinks or sources.
+6. Hard gates: `n_source ≥ 1` **and** `n_sink ≥ 1` **and** `total_events ≥ 2000`.
+
+### Threshold choices and why
+
+- `SOURCE_RHO_MAX = 0.7`, `SINK_RHO_MIN = 1.5`. Symmetric on the log-scale-ish (`|log 0.7| ≈ 0.36`, `|log 1.5| ≈ 0.41`), and leaves a fat-enough `balanced` middle (36% of stations) that the tails are clearly unbalanced rather than just noisy.
+- `MIN_CLUSTER_EVENTS = 2000`. Over the 63-hour exposure window, that's ≥ ~32 events/hour across the cluster — enough that per-station rate MLEs aren't dominated by shot noise.
+- `K_ORIGINS = 3`. With the seed that gives a 4-station cluster, inside the "3–4 station" target in `Project_Specifications.md`. The optional nearby-sink step can push to 5.
+- `N_SINK_SEEDS = 20`. Didn't need to sweep — 11 clusters passed all gates at the default thresholds, no relaxation required.
+
+### Top 3 clusters from the new ranking
+
+All three are in **Midtown West, around 10th–11th Ave between W 44th and W 50th**. That's the morning commuter funnel from the west-side residential blocks into the theatre-district/Times Square corridor — which is exactly the "high-imbalance corridor" the project spec hypothesised.
+
+| rank | members (n_src / n_sink / n_bal) | seed sink | score | balance | events |
+|------|--|--|--:|--:|--:|
+| 0 | 3 src + 2 sink | Broadway & W 48 St | 7,710 | 0.79 | 11,947 |
+| 1 | similar Midtown West cluster | (see top table) | — | — | — |
+| 2 | similar Midtown West cluster | (see top table) | — | — | — |
+
+(Concrete numbers for ranks 1–2 live in the notebook's `clusters_summary.head(10)` cell; they shift if thresholds are tweaked.)
+
+### Cluster picked
+
+Rank 0. Members:
+
+| station | type | λ (/h) | μ (/h) | ρ | capacity |
+|---|---|--:|--:|--:|--:|
+| Broadway & W 48 St | sink   | 19.0 | 38.7 | 2.04 | 103 |
+| W 47 St & 10 Ave   | source | 14.4 |  7.8 | 0.54 |  39 |
+| W 44 St & 11 Ave   | source | 35.8 | 17.9 | 0.50 |  79 |
+| W 50 St & 10 Ave   | source | 20.7 |  9.1 | 0.44 |  55 |
+| W 44 St & 5 Ave    | sink   |  5.9 | 20.3 | 3.42 |  68 |
+
+Total capacity `sum c_n = 344`. `F_base = 70.2 events/hour` ≈ 211 failed user events per weekday morning. Unlike the old cluster, the stockout column is now substantial: the three sources contribute 6.6 + 17.9 + 11.6 = 36.1 stockouts/h, alongside 19.7 + 14.4 = 34.1 dockblocks/h from the sinks. That 50/50 mix is exactly what reallocation can work on.
+
+### Thresholds that had to be relaxed
+
+**None.** 11 clusters passed at the default thresholds. The relaxation branch (`source_rho_max → 0.8`, then `min_events → 1500`) is unused; kept in the code as a guardrail.
+
+### Gotcha discovered in the re-rank
+
+**Closure fraction is low (~7% per sink).** In Midtown, each sink station draws deposits from a huge number of origins — the 3 cluster sources account for only 168/2437 (6.9%) of deposits into Broadway & W 48 St and 97/1279 (7.6%) into W 44 St & 5 Ave. That does not invalidate the independent-station CTMC, but it does mean the "network effect" baked into each `mu_n` is driven mostly by origins *outside* the cluster. For the paper: this is a good thing to explicitly acknowledge — the CTMC is treating each station as a black-box queue with exogenous rates, and the exogeneity is *real* here (97% of deposits do come from outside the cluster). It is also a limitation: a policy experiment that involves *moving docks between the cluster members* implicitly assumes those outside-cluster arrivals keep their current rate, which is a clean counterfactual under the independence assumption but would need revisiting for any larger-scale reallocation.
+
+### Changes to downstream parts
+
+- Part 2 now reads the new cluster via the same `SELECTED_CLUSTER_RANK` / `SELECTED_STATION_IDS` interface — no edits required except swapping the display column `direction` → `type`.
+- Part 3 is unchanged (it always read `(lam, mu, c)` off the selected table) and writes the same CSV schema.
+- All 14 `test_ctmc.py` tests still pass.
+- Exponential GOF still rejects on most (station, event-type) streams in the new cluster. Same Poisson-misspecification story as before; Midtown morning-rush non-stationarity is genuinely present. Keep this as the paper's headline limitation and present the CTMC results as a model-under-assumption, not data-validated-distribution.

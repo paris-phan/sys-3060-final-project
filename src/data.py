@@ -24,6 +24,7 @@ import requests
 log = logging.getLogger(__name__)
 
 TRIPS_URL_TEMPLATE = "https://s3.amazonaws.com/tripdata/{year_month}-citibike-tripdata.zip"
+TRIPS_YEARLY_URL_TEMPLATE = "https://s3.amazonaws.com/tripdata/{year}-citibike-tripdata.zip"
 GBFS_URL = "https://gbfs.citibikenyc.com/gbfs/en/station_information.json"
 
 TRIP_COLUMNS = [
@@ -48,15 +49,7 @@ TRIP_COLUMNS = [
 # ---------------------------------------------------------------------------
 
 
-def download_trip_zip(year_month: str, raw_dir: Path) -> Path:
-    """Download the parent zip for the given YYYYMM into raw_dir. No-op if cached."""
-    raw_dir = Path(raw_dir)
-    raw_dir.mkdir(parents=True, exist_ok=True)
-    dest = raw_dir / f"{year_month}-citibike-tripdata.zip"
-    if dest.exists() and dest.stat().st_size > 0:
-        log.info("Cache hit: %s (%d bytes)", dest.name, dest.stat().st_size)
-        return dest
-    url = TRIPS_URL_TEMPLATE.format(year_month=year_month)
+def _stream_download(url: str, dest: Path) -> None:
     log.info("Downloading %s -> %s", url, dest)
     with requests.get(url, stream=True, timeout=120) as r:
         r.raise_for_status()
@@ -65,7 +58,41 @@ def download_trip_zip(year_month: str, raw_dir: Path) -> Path:
             for chunk in r.iter_content(chunk_size=1 << 20):
                 f.write(chunk)
         tmp.replace(dest)
-    return dest
+
+
+def download_trip_zip(year_month: str, raw_dir: Path) -> Path:
+    """Download the parent zip for the given YYYYMM into raw_dir. No-op if cached.
+
+    Tries the monthly file first; falls back to the yearly zip if the monthly
+    one is missing on S3 (older months -- e.g. 2021 -- are only published as
+    a single yearly archive).
+    """
+    raw_dir = Path(raw_dir)
+    raw_dir.mkdir(parents=True, exist_ok=True)
+    year = year_month[:4]
+
+    monthly = raw_dir / f"{year_month}-citibike-tripdata.zip"
+    yearly  = raw_dir / f"{year}-citibike-tripdata.zip"
+
+    # Prefer cached monthly, then cached yearly.
+    for path in (monthly, yearly):
+        if path.exists() and path.stat().st_size > 0:
+            log.info("Cache hit: %s (%d bytes)", path.name, path.stat().st_size)
+            return path
+
+    # Neither cached; try monthly download first.
+    monthly_url = TRIPS_URL_TEMPLATE.format(year_month=year_month)
+    try:
+        _stream_download(monthly_url, monthly)
+        return monthly
+    except requests.HTTPError as exc:
+        if exc.response is None or exc.response.status_code != 404:
+            raise
+        log.info("Monthly zip not found on S3; falling back to yearly archive for %s", year)
+
+    yearly_url = TRIPS_YEARLY_URL_TEMPLATE.format(year=year)
+    _stream_download(yearly_url, yearly)
+    return yearly
 
 
 def _iter_csv_members(zip_path: Path) -> Iterable[tuple[zipfile.ZipFile, str]]:
@@ -105,13 +132,24 @@ class _BytesIOCompat:
 
 
 def load_trips(year_month: str, raw_dir: Path) -> pd.DataFrame:
-    """Download (if needed) and load all trip CSVs for the month into one DataFrame.
+    """Download (if needed) and load trip CSVs for the given YYYYMM.
 
     Uses pyarrow under the hood (via pandas) and parses the datetime columns.
+    When the zip is a yearly archive (e.g. 2021), only inner members whose
+    name contains the target `YYYYMM` substring are read, so memory cost
+    stays at ~one-month scale. A final timestamp filter on
+    `started_at.dt.year/month` guards against inner-naming variations.
     """
     zip_path = download_trip_zip(year_month, raw_dir)
+    is_yearly = year_month[:4] + "-citibike-tripdata.zip" == zip_path.name
+    target_year, target_month = int(year_month[:4]), int(year_month[4:])
+
     frames: list[pd.DataFrame] = []
     for zf, member in _iter_csv_members(zip_path):
+        # When we're inside a yearly zip, skip CSVs that obviously belong to
+        # other months. Use the basename so nested-zip paths don't confuse us.
+        if is_yearly and year_month not in Path(member).name:
+            continue
         log.info("  reading %s", member)
         with zf.open(member) as fh:
             df = pd.read_csv(
@@ -130,14 +168,26 @@ def load_trips(year_month: str, raw_dir: Path) -> pd.DataFrame:
             )
         frames.append(df)
     if not frames:
-        raise RuntimeError(f"No CSV members found in {zip_path}")
+        raise RuntimeError(
+            f"No CSV members matched {year_month} in {zip_path}. "
+            "Check the year-month string and the zip's inner layout."
+        )
     trips = pd.concat(frames, ignore_index=True, copy=False)
+
     # Drop rows with missing station IDs or timestamps -- can't use them.
     before = len(trips)
     trips = trips.dropna(
         subset=["start_station_id", "end_station_id", "started_at", "ended_at"]
     )
-    log.info("Loaded %d trips (%d dropped for missing keys).", len(trips), before - len(trips))
+
+    # Safety filter on actual timestamps: restrict to the target month.
+    # (Protects against inner-file naming oddities in yearly zips.)
+    s = trips["started_at"]
+    in_month = (s.dt.year == target_year) & (s.dt.month == target_month)
+    trips = trips.loc[in_month].reset_index(drop=True)
+
+    log.info("Loaded %d trips for %s (%d dropped for missing/OOB).",
+             len(trips), year_month, before - len(trips))
     return trips
 
 

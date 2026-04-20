@@ -29,7 +29,7 @@ This notebook does three things:
 
 All modelling math lives in `src/ctmc.py`; IO and rate estimation in `src/data.py`; geographic helpers in `src/geo.py`. The next notebook (`02_capacity_reallocation.ipynb`) imports from the same package and starts from the CSV this notebook writes.
 
-Data window: **September 2024, weekday mornings 07:00–10:00 local time.**
+Data window: **December 2021, weekday mornings 07:00–10:00 local time.**
 """)
 
 
@@ -62,14 +62,23 @@ PROCESSED_DIR = ROOT / "data" / "processed"
 PROCESSED_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- global knobs -----------------------------------------------------------
-YEAR_MONTH    = "202409"   # September 2024
-START_HOUR    = 7          # inclusive
-END_HOUR      = 10         # exclusive -> 3-hour window
-MIN_EVENTS    = 100        # per-station minimum to keep; drops noisy low-volume stations
-NEIGHBOR_R_M  = 500.0      # cap geographic radius for nearest-neighbour clustering
-N_NEIGHBORS   = 3          # 2-3 neighbours per seed as the spec suggests
-N_SEEDS       = 40         # how many high-imbalance stations to expand into clusters
-TOP_CLUSTERS  = 10         # rows to show in the ranked candidate table
+YEAR_MONTH       = "202112"   # December 2021
+START_HOUR       = 7          # inclusive
+END_HOUR         = 10         # exclusive -> 3-hour window
+MIN_EVENTS       = 100        # per-station minimum; drops noisy low-volume stations
+
+# Imbalance thresholds for station classification (rho = mu / lam).
+SOURCE_RHO_MAX   = 0.7        # rho below this -> 'source' (runs dry)
+SINK_RHO_MIN     = 1.5        # rho above this -> 'sink'   (overfills)
+
+# Cluster-assembly knobs.
+N_SINK_SEEDS     = 20         # seed count: top sinks by volume * |log rho|
+K_ORIGINS        = 3          # top-K origin stations feeding into each seed sink
+MAX_CLUSTER_SIZE = 5
+MIN_CLUSTER_EVENTS = 2000     # gate: total events across cluster members
+NEARBY_SINK_KM   = 1.0        # radius for optional extra-sink inclusion
+
+TOP_CLUSTERS     = 10         # rows to show in the ranked candidate table
 
 print("root:", ROOT)
 print("raw :", RAW_DIR)
@@ -78,17 +87,24 @@ print("raw :", RAW_DIR)
 # ---------------------------------------------------------------------------
 # Part 1 — Candidate clusters
 # ---------------------------------------------------------------------------
-md(r"""## Part 1 — Surface candidate clusters
+md(r"""## Part 1 — Surface candidate clusters (routing-aware)
 
-Pipeline:
+The previous revision picked clusters by geographic nearest-neighbours of the most-imbalanced seed. That surfaced four sinks clustered at the Brooklyn Navy Yard with no source stations — a cluster that can't tell a reallocation story because there's no one running dry for the extra docks to help. See `01_NOTES.md` section "Routing-aware re-rank" for the post-mortem.
 
-1. Load Sept-2024 trip data (cached after first download) and the current GBFS station feed for capacities + coordinates.
-2. Filter to weekday mornings 07:00–10:00; estimate per-station $\hat\lambda_n, \hat\mu_n$ per hour; drop stations with fewer than **100** events in the whole window (rate estimates are too noisy below that).
-3. Rank stations by $|\log(\hat\mu_n / \hat\lambda_n)|$ — the symmetric measure of directional imbalance (source stations have $\rho<1$, sinks have $\rho>1$).
-4. For each high-imbalance seed, pick its 2–3 nearest neighbours within 500 m (haversine). Deduplicate identical station sets.
-5. Score each candidate cluster by **mean($|\log\rho|$) × total cluster volume** and report the top 10.
+Replacement pipeline:
 
-The spec calls for a 3–4-station cluster; expanding the top seed with its 2–3 nearest neighbours gives a 3–4-station set by construction.
+1. **Classify** every eligible station by $\rho_n = \hat\mu_n / \hat\lambda_n$:
+   * `source` if $\rho < $ `SOURCE_RHO_MAX` ($0.7$) — runs dry, withdrawals dominate.
+   * `sink`   if $\rho > $ `SINK_RHO_MIN` ($1.5$) — overfills, deposits dominate.
+   * `balanced` in between — not seed material but available as filler.
+2. **Build the trip-routing matrix** on the already-filtered 7–10 AM weekday trips: counts of trips for every observed `(start_id, end_id)` pair. This is what makes the clustering "routing-aware" — cluster members are stations *actually connected by commuter flow*, not just geographically close.
+3. **Seed on top sinks** by volume $\times$ imbalance: $(\hat\lambda + \hat\mu) \cdot |\log\rho|$ for all `sink` stations; take the top `N_SINK_SEEDS` = 20.
+4. **Assemble each cluster** by picking the top `K_ORIGINS` = 3 stations feeding the seed (by trip count into the seed), requiring at least one of them to have $\rho < 0.7$. Optionally add 1 nearby sink within 1 km that shares source inflow. Cap at `MAX_CLUSTER_SIZE` = 5. Require $\geq 1$ source, $\geq 1$ sink, and total cluster events $\geq$ `MIN_CLUSTER_EVENTS` = 2000.
+5. **Score clusters** with a balance-aware composite
+$$
+\text{score} = (\text{total cluster events}) \cdot \underbrace{\frac{\min(V_{\text{src}}, V_{\text{snk}})}{\max(V_{\text{src}}, V_{\text{snk}})}}_{\text{balance factor} \in (0, 1]} \cdot \overline{|\log\rho_n|}.
+$$
+The balance factor kills the old failure mode where a cluster is 95% sink traffic: for reallocation to do anything, there must be docks to move *from* under-used sinks *to* over-used sources (or the reverse). If sources and sinks are mismatched 10:1 in volume, the reallocation upside shrinks.
 """)
 
 code(r"""trips = dataio.load_trips(YEAR_MONTH, RAW_DIR)
@@ -134,73 +150,234 @@ print(f"after lam,mu > 0           : {len(stations):,}")
 # Imbalance metric on the log scale -> symmetric in source vs. sink.
 stations["log_imbalance"] = np.log(stations["rho_hat"])
 stations["abs_log_imbalance"] = stations["log_imbalance"].abs()
-stations["direction"] = np.where(stations["rho_hat"] > 1, "sink (mu > lam)", "source (mu < lam)")
+
+# Three-way classification by rho. `balanced` stations are kept in the
+# universe (they can appear as origins in the routing matrix and contribute
+# to volume) but they are not seed material.
+def _classify(rho):
+    if rho < SOURCE_RHO_MAX:
+        return "source"
+    if rho > SINK_RHO_MIN:
+        return "sink"
+    return "balanced"
+
+stations["type"] = stations["rho_hat"].apply(_classify).astype("category")
+counts = stations["type"].value_counts().to_dict()
+print(f"classification: source={counts.get('source',0)}, "
+      f"balanced={counts.get('balanced',0)}, sink={counts.get('sink',0)}")
 
 stations.sort_values("abs_log_imbalance", ascending=False).head(10)[
-    ["station_id", "name", "capacity", "lam", "mu", "rho_hat", "log_imbalance", "n_events", "direction"]
+    ["station_id", "name", "capacity", "lam", "mu", "rho_hat", "log_imbalance", "n_events", "type"]
 ]
 """)
 
-code(r"""# Pick the N_SEEDS most-imbalanced stations and expand each into a cluster
-# via its nearest neighbours (haversine).
-seeds = stations.sort_values("abs_log_imbalance", ascending=False).head(N_SEEDS).index.to_list()
+code(r"""# ---- Build the trip-routing matrix on the 7-10am weekday slice. ----
+# This is a groupby on the already-in-memory `trips` DataFrame -- no re-read.
+s = trips["started_at"]
+win = (s.dt.dayofweek < 5) & (s.dt.hour >= START_HOUR) & (s.dt.hour < END_HOUR)
+trips_win = trips.loc[win, ["start_station_id", "end_station_id"]]
 
-clusters = []
-for seed in seeds:
-    neigh = geo.nearest_neighbors_within(
-        stations, seed_idx=seed, max_neighbors=N_NEIGHBORS, radius_m=NEIGHBOR_R_M
-    )
-    members = [seed] + neigh
-    if len(members) < 3:
-        # Too isolated; skip -- a 3-4 station cluster is the spec.
-        continue
-    ids = tuple(sorted(stations.loc[members, "station_id"]))
-    clusters.append({
-        "seed_idx": seed,
-        "members_idx": members,
-        "station_ids": ids,
-    })
-
-# Deduplicate on the station-id tuple (many seeds share the same neighbourhood).
-seen = set()
-unique_clusters = []
-for c in clusters:
-    if c["station_ids"] in seen:
-        continue
-    seen.add(c["station_ids"])
-    unique_clusters.append(c)
-
-print(f"{len(clusters)} seed-expansions -> {len(unique_clusters)} unique clusters")
+routing = (
+    trips_win.groupby(["start_station_id", "end_station_id"], observed=True)
+             .size().rename("trip_count").reset_index()
+             .rename(columns={"start_station_id": "start_id",
+                              "end_station_id":   "end_id"})
+)
+# Restrict to our filtered universe of eligible stations. Trips to/from
+# dropped stations still represent real demand but we can't build a CTMC
+# model of them, so they don't belong in cluster assembly.
+universe = set(stations["station_id"])
+routing = routing.loc[routing["start_id"].isin(universe)
+                       & routing["end_id"].isin(universe)].reset_index(drop=True)
+print(f"routing matrix: {len(routing):,} nonzero (start, end) pairs "
+      f"over {len(universe):,} stations")
+print(f"total intra-universe trips in window: {int(routing['trip_count'].sum()):,}")
 """)
 
-code(r"""# Score each cluster: mean(|log rho|) x total event volume.
-def summarize_cluster(cluster, stations):
-    sub = stations.loc[cluster["members_idx"], :]
+code(r"""# ---- Cluster assembly: seed on top sinks, pull in top origins via routing. ----
+# Returns either a cluster dict or None. A cluster is a list of station_ids
+# containing the seed sink plus up to K_ORIGINS top origin stations, and
+# optionally one nearby secondary sink.
+stations_by_id = stations.set_index("station_id")
+
+def _assemble_cluster(seed_id, routing, stations_by_id,
+                      k_origins=K_ORIGINS, max_size=MAX_CLUSTER_SIZE,
+                      nearby_sink_km=NEARBY_SINK_KM,
+                      source_rho_max=SOURCE_RHO_MAX):
+    '''Build a cluster around `seed_id` (a sink) using routing data.
+
+    Returns None if no origin has rho < source_rho_max or the cluster ends
+    up without a proper source (ensures >= 1 source guaranteed).
+    '''
+    # Top k_origins stations that feed this seed sink by trip count.
+    inflows = routing.loc[routing["end_id"] == seed_id]
+    if inflows.empty:
+        return None
+    inflows = inflows.sort_values("trip_count", ascending=False)
+
+    # Filter to origins that exist in our universe (they do, since routing is
+    # already restricted) and that aren't the seed itself.
+    inflows = inflows.loc[inflows["start_id"] != seed_id]
+    top_origins = inflows["start_id"].head(k_origins).tolist()
+
+    # Require at least one top origin to be a proper source (rho < 0.7).
+    origin_types = stations_by_id.loc[top_origins, "type"]
+    if not (origin_types == "source").any():
+        return None
+
+    members = [seed_id] + top_origins
+    # Optional: one nearby sink (within nearby_sink_km) that shares an origin
+    # with the seed. Helps bulk up clusters that are too thin.
+    if len(members) < max_size:
+        seed_row = stations_by_id.loc[seed_id]
+        other_sinks = stations_by_id.loc[
+            (stations_by_id["type"] == "sink")
+            & (~stations_by_id.index.isin(members))
+        ].copy()
+        if len(other_sinks):
+            other_sinks["dist_m"] = geo.haversine_m(
+                float(seed_row["lat"]), float(seed_row["lng"]),
+                other_sinks["lat"].to_numpy(), other_sinks["lng"].to_numpy(),
+            )
+            nearby = other_sinks.loc[other_sinks["dist_m"] <= nearby_sink_km * 1000]
+            if len(nearby):
+                # Score by how many trips the already-picked origins send
+                # into each candidate nearby sink.
+                overlap = routing.loc[
+                    routing["start_id"].isin(top_origins)
+                    & routing["end_id"].isin(nearby.index)
+                ]
+                if len(overlap):
+                    overlap_count = (overlap.groupby("end_id")["trip_count"]
+                                            .sum().sort_values(ascending=False))
+                    for nid in overlap_count.index:
+                        if nid in members:
+                            continue
+                        members.append(nid)
+                        if len(members) >= max_size:
+                            break
+
+    return members
+
+
+def _cluster_record(members, stations_by_id, routing):
+    sub = stations_by_id.loc[members].reset_index()
+    src_mask = sub["type"] == "source"
+    snk_mask = sub["type"] == "sink"
+    n_source = int(src_mask.sum())
+    n_sink   = int(snk_mask.sum())
+    total_events = int(sub["n_events"].sum())
+    # Volumes (events/hour) split by type.
+    v_source = float(sub.loc[src_mask, ["lam", "mu"]].sum(axis=1).sum())
+    v_sink   = float(sub.loc[snk_mask, ["lam", "mu"]].sum(axis=1).sum())
+    # Balance factor in (0, 1]. By construction n_source >= 1 and n_sink >= 1,
+    # but a balanced-only filler could still leave v_source or v_sink == 0, so
+    # guard.
+    balance = (min(v_source, v_sink) / max(v_source, v_sink)
+               if v_source > 0 and v_sink > 0 else 0.0)
+    mean_abs_log_rho = float(sub["abs_log_imbalance"].mean())
+    score = total_events * balance * mean_abs_log_rho
     return {
-        "cluster_id": "|".join(cluster["station_ids"]),
-        "n_stations": len(sub),
+        "cluster_id":       "|".join(sorted(members)),
+        "seed_id":          members[0],
+        "n_stations":       len(sub),
+        "n_source":         n_source,
+        "n_sink":           n_sink,
         "member_station_ids": list(sub["station_id"]),
-        "member_names": list(sub["name"]),
-        "sum_events": int(sub["n_events"].sum()),
-        "mean_abs_log_rho": float(sub["abs_log_imbalance"].mean()),
-        "score": float(sub["abs_log_imbalance"].mean() * sub["n_events"].sum()),
-        "sum_capacity": int(sub["capacity"].sum()),
-        "min_rho": float(sub["rho_hat"].min()),
-        "max_rho": float(sub["rho_hat"].max()),
+        "member_names":       list(sub["name"]),
+        "member_types":       list(sub["type"].astype(str)),
+        "sum_events":         total_events,
+        "source_volume":      v_source,
+        "sink_volume":        v_sink,
+        "balance_factor":     balance,
+        "mean_abs_log_rho":   mean_abs_log_rho,
+        "score":              score,
+        "sum_capacity":       int(sub["capacity"].sum()),
+        "min_rho":            float(sub["rho_hat"].min()),
+        "max_rho":            float(sub["rho_hat"].max()),
     }
 
-clusters_summary = pd.DataFrame([summarize_cluster(c, stations) for c in unique_clusters])
-clusters_summary = clusters_summary.sort_values("score", ascending=False).reset_index(drop=True)
-print(f"top {TOP_CLUSTERS} candidate clusters (mean |log rho| x volume):")
-clusters_summary.head(TOP_CLUSTERS).drop(columns=["member_station_ids"])
+
+def _build_clusters(source_rho_max, min_events, n_sink_seeds, stations, routing):
+    # Recompute classification if source_rho_max was relaxed.
+    s_local = stations.copy()
+    s_local["type"] = s_local["rho_hat"].apply(
+        lambda r: "source" if r < source_rho_max
+                  else ("sink" if r > SINK_RHO_MIN else "balanced")
+    ).astype("category")
+    sbid = s_local.set_index("station_id")
+
+    sinks_local = s_local.loc[s_local["type"] == "sink"].copy()
+    sinks_local["sink_score"] = (
+        (sinks_local["lam"] + sinks_local["mu"]) * sinks_local["abs_log_imbalance"]
+    )
+    seeds = (sinks_local.sort_values("sink_score", ascending=False)
+                        .head(n_sink_seeds)["station_id"].tolist())
+
+    raw = []
+    for seed in seeds:
+        members = _assemble_cluster(seed, routing, sbid,
+                                    source_rho_max=source_rho_max)
+        if members is None:
+            continue
+        sub = sbid.loc[members]
+        if not ((sub["type"] == "source").any() and (sub["type"] == "sink").any()):
+            continue
+        if int(sub["n_events"].sum()) < min_events:
+            continue
+        raw.append(members)
+
+    # Deduplicate on the sorted station-id set.
+    seen, unique = set(), []
+    for m in raw:
+        key = tuple(sorted(m))
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(m)
+    records = [_cluster_record(m, sbid, routing) for m in unique]
+    return pd.DataFrame(records)
+
+
+# First try at the stated thresholds. Fall back with explicit warning if empty.
+clusters_summary = _build_clusters(
+    source_rho_max=SOURCE_RHO_MAX,
+    min_events=MIN_CLUSTER_EVENTS,
+    n_sink_seeds=N_SINK_SEEDS,
+    stations=stations, routing=routing,
+)
+relaxations = []
+if clusters_summary.empty:
+    print(f"WARNING: no clusters at default thresholds "
+          f"(source_rho<{SOURCE_RHO_MAX}, min_events>={MIN_CLUSTER_EVENTS}). "
+          f"Relaxing source threshold to 0.8.")
+    clusters_summary = _build_clusters(0.8, MIN_CLUSTER_EVENTS, N_SINK_SEEDS,
+                                        stations, routing)
+    relaxations.append("source_rho_max 0.7 -> 0.8")
+if clusters_summary.empty:
+    print(f"WARNING: still empty after relaxing rho; lowering min_events to 1500.")
+    clusters_summary = _build_clusters(0.8, 1500, N_SINK_SEEDS, stations, routing)
+    relaxations.append("min_events 2000 -> 1500")
+if clusters_summary.empty:
+    raise RuntimeError(
+        "No clusters found even after relaxing thresholds. "
+        "Check the trip/GBFS data or lower thresholds further."
+    )
+
+clusters_summary = (clusters_summary.sort_values("score", ascending=False)
+                                    .reset_index(drop=True))
+if relaxations:
+    print("relaxations applied:", "; ".join(relaxations))
+print(f"{len(clusters_summary)} clusters pass gates; top {TOP_CLUSTERS} by composite score:")
+clusters_summary.head(TOP_CLUSTERS).drop(columns=["member_station_ids", "member_names", "member_types"])
 """)
 
 code(r"""# Per-station detail for the top candidates, so the numbers aren't opaque.
 def expand_cluster_rows(row, stations):
     sub = stations.set_index("station_id").loc[row["member_station_ids"], :].reset_index()
     sub.insert(0, "cluster_rank", row.name)
-    return sub[["cluster_rank", "station_id", "name", "capacity", "lam", "mu", "rho_hat",
-                "n_withdraw", "n_deposit", "n_events", "direction"]]
+    return sub[["cluster_rank", "station_id", "name", "type", "capacity",
+                "lam", "mu", "rho_hat", "n_withdraw", "n_deposit", "n_events"]]
 
 top = clusters_summary.head(TOP_CLUSTERS).reset_index(drop=True)
 per_station_detail = pd.concat(
@@ -210,38 +387,138 @@ per_station_detail = pd.concat(
 per_station_detail.round(3)
 """)
 
-code(r"""# Folium map: top-3 clusters, marker radius ~ sqrt(events), colour by direction.
+code(r"""# Folium map of top-3 clusters. Stations coloured by type; within each
+# cluster we draw the top-5 observed trip flows as AntPath arrows whose
+# thickness is proportional to trip count.
 import folium
+from folium.plugins import AntPath
+
+TYPE_COLORS = {"source": "#2b6cb0",   # blue   = needs bikes
+               "sink":   "#c53030",   # red    = overfills
+               "balanced": "#718096"} # gray   = filler / passthrough
 
 top3 = clusters_summary.head(3).reset_index(drop=True)
-center_lat = stations["lat"].mean()
-center_lng = stations["lng"].mean()
-m = folium.Map(location=[center_lat, center_lng], zoom_start=13, tiles="cartodbpositron")
+all_pts = stations.set_index("station_id").loc[
+    [sid for row in top3["member_station_ids"] for sid in row]
+]
+center_lat = float(all_pts["lat"].mean())
+center_lng = float(all_pts["lng"].mean())
+m = folium.Map(location=[center_lat, center_lng], zoom_start=14, tiles="cartodbpositron")
 
-palette = ["#1b9e77", "#d95f02", "#7570b3"]  # three distinct hues per cluster
+border_palette = ["#1b9e77", "#d95f02", "#7570b3"]  # one border hue per cluster
+
 for rank, row in top3.iterrows():
-    sub = stations.set_index("station_id").loc[row["member_station_ids"], :].reset_index()
-    color = palette[rank]
+    members = row["member_station_ids"]
+    sub = stations.set_index("station_id").loc[members, :].reset_index()
+    border = border_palette[rank]
+
+    # --- station markers (fill color by type, border color by cluster) ---
     for _, s in sub.iterrows():
-        fill = "#2b8cbe" if s["rho_hat"] > 1 else "#d7301f"  # blue = sink, red = source
         folium.CircleMarker(
             location=[s["lat"], s["lng"]],
-            radius=4 + 1.2 * np.sqrt(s["n_events"] / 100.0),
-            color=color, weight=3, fill=True, fill_color=fill, fill_opacity=0.8,
-            popup=(f"<b>{s['name']}</b><br>cluster rank {rank}<br>"
-                   f"cap={s['capacity']}, lam={s['lam']:.1f}/h, mu={s['mu']:.1f}/h, "
-                   f"rho={s['rho_hat']:.2f}"),
+            radius=5 + 1.0 * np.sqrt(s["n_events"] / 100.0),
+            color=border, weight=3,
+            fill=True, fill_color=TYPE_COLORS[str(s["type"])], fill_opacity=0.9,
+            popup=(
+                f"<b>{s['name']}</b><br>"
+                f"cluster rank {rank} &middot; type={s['type']}<br>"
+                f"cap={int(s['capacity'])}, lam={s['lam']:.1f}/h, "
+                f"mu={s['mu']:.1f}/h, rho={s['rho_hat']:.2f}<br>"
+                f"events={int(s['n_events'])}"
+            ),
         ).add_to(m)
 
-# Thin lines between members of the same cluster, for legibility.
-for rank, row in top3.iterrows():
-    sub = stations.set_index("station_id").loc[row["member_station_ids"], :].reset_index()
-    pts = sub[["lat", "lng"]].to_numpy().tolist()
-    for i in range(len(pts)):
-        for j in range(i+1, len(pts)):
-            folium.PolyLine([pts[i], pts[j]], color=palette[rank], weight=1, opacity=0.4).add_to(m)
+    # --- top trip flows within this cluster ---
+    intra = routing.loc[routing["start_id"].isin(members)
+                         & routing["end_id"].isin(members)
+                         & (routing["start_id"] != routing["end_id"])]
+    top_flows = intra.sort_values("trip_count", ascending=False).head(5)
+    if len(top_flows):
+        max_count = float(top_flows["trip_count"].max())
+        by_id = sub.set_index("station_id")
+        for _, f in top_flows.iterrows():
+            if f["start_id"] not in by_id.index or f["end_id"] not in by_id.index:
+                continue
+            a = by_id.loc[f["start_id"]]
+            b = by_id.loc[f["end_id"]]
+            # AntPath is an animated dashed polyline; direction is obvious
+            # because dashes flow from start to end. Weight scales with count.
+            AntPath(
+                locations=[[float(a["lat"]), float(a["lng"])],
+                           [float(b["lat"]), float(b["lng"])]],
+                color=border, weight=2 + 6 * (float(f["trip_count"]) / max_count),
+                opacity=0.85, delay=900, dash_array=[10, 20],
+                tooltip=f"{a['name']} -> {b['name']}: {int(f['trip_count'])} trips",
+            ).add_to(m)
 
+# Simple legend.
+legend_html = '''
+<div style="position: fixed; bottom: 24px; left: 24px; z-index: 9999;
+            background: white; padding: 8px 12px; font: 12px sans-serif;
+            border: 1px solid #888; border-radius: 4px; line-height: 1.6;">
+  <b>Station type</b><br>
+  <span style="color:#2b6cb0;">&#9679;</span> source (rho &lt; 0.7)<br>
+  <span style="color:#c53030;">&#9679;</span> sink  (rho &gt; 1.5)<br>
+  <span style="color:#718096;">&#9679;</span> balanced (filler)<br>
+  <b>Cluster outline</b><br>
+  <span style="color:#1b9e77;">&#9632;</span> rank 0 (top)<br>
+  <span style="color:#d95f02;">&#9632;</span> rank 1<br>
+  <span style="color:#7570b3;">&#9632;</span> rank 2<br>
+  <em>arrows: top-5 trip flows, thickness &prop; count</em>
+</div>'''
+m.get_root().html.add_child(folium.Element(legend_html))
 m
+""")
+
+code(r"""# --- sanity check on the top-ranked cluster ---
+# Closure fraction: what share of each sink's deposits come from sources
+# already inside this cluster? Higher = the CTMC assumption that each
+# station is an independent queue with exogenous arrivals is less of a lie
+# (the sources really are the ones driving the sinks).
+top_row = clusters_summary.iloc[0]
+top_ids = top_row["member_station_ids"]
+top_sub = stations.set_index("station_id").loc[top_ids]
+top_sources = [sid for sid, t in zip(top_ids, top_row["member_types"]) if t == "source"]
+top_sinks   = [sid for sid, t in zip(top_ids, top_row["member_types"]) if t == "sink"]
+
+intra_src_to_snk = routing.loc[
+    routing["start_id"].isin(top_sources)
+    & routing["end_id"].isin(top_sinks)
+]["trip_count"].sum()
+total_into_sinks_from_universe = routing.loc[routing["end_id"].isin(top_sinks)]["trip_count"].sum()
+total_into_sinks_from_any = int(top_sub.loc[top_sinks, "n_deposit"].sum())
+
+print("=" * 72)
+print(f"TOP CLUSTER SANITY CHECK  ({top_row['cluster_id'][:60]}...)")
+print("=" * 72)
+print(f"members           : {len(top_ids)}  "
+      f"({top_row['n_source']} source + {top_row['n_sink']} sink + "
+      f"{len(top_ids) - top_row['n_source'] - top_row['n_sink']} balanced)")
+print(f"total events      : {top_row['sum_events']:,}")
+print(f"source volume     : {top_row['source_volume']:.1f}/h  (sum lam+mu on sources)")
+print(f"sink   volume     : {top_row['sink_volume']:.1f}/h  (sum lam+mu on sinks)")
+print(f"balance factor    : {top_row['balance_factor']:.3f}")
+print(f"mean |log rho|    : {top_row['mean_abs_log_rho']:.3f}")
+print(f"composite score   : {top_row['score']:.1f}")
+print()
+print(f"Intra-cluster source->sink trips : {int(intra_src_to_snk):,}")
+print(f"Total trips into cluster sinks (universe)  : {int(total_into_sinks_from_universe):,}")
+print(f"Closure fraction (universe-scoped) : "
+      f"{intra_src_to_snk / max(total_into_sinks_from_universe, 1):.3f}")
+print(f"(Higher = cluster sinks are mostly fed by cluster sources "
+      f"-- the independent-station approximation is less lossy.)")
+print()
+# Per-sink closure: share of *each* sink's deposits coming from cluster sources.
+for sid in top_sinks:
+    srow = top_sub.loc[sid]
+    from_cluster = int(routing.loc[(routing["end_id"] == sid)
+                                    & (routing["start_id"].isin(top_sources))]
+                             ["trip_count"].sum())
+    total_deposits = int(srow["n_deposit"])
+    frac = from_cluster / total_deposits if total_deposits else 0.0
+    print(f"  {str(srow['name'])[:40]:40s}  "
+          f"deposits from cluster sources: {from_cluster:>4d} / {total_deposits:>4d}  "
+          f"({frac:.1%})")
 """)
 
 
@@ -273,7 +550,7 @@ selected = (
     stations.set_index("station_id").loc[SELECTED_STATION_IDS, :].reset_index()
 )
 print(f"Selected cluster (rank={SELECTED_CLUSTER_RANK}): {len(selected)} stations")
-selected[["station_id", "name", "capacity", "lam", "mu", "rho_hat", "n_events", "direction"]]
+selected[["station_id", "name", "type", "capacity", "lam", "mu", "rho_hat", "n_events"]]
 """)
 
 code(r"""def exp_gof(interarrivals_sec):
