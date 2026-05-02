@@ -29,13 +29,14 @@ A CTMC Model with Truck-Rebalancing-Rate Allocation}
 Spencer Arnold,
 Paris Phan,
 Garrett Uthlaut\\
-\fontsize{9}{10}\selectfont \textit{School of Engineering and Applied Science, University of Virginia, Charlottesville, Virginia}
+\fontsize{9}{10}\selectfont \textit{University of Virginia, Charlottesville, Virginia}
 }
 
 \maketitle
 
 \begin{abstract}
-% New York City's Citi Bike system suffers from chronic spatial imbalance during commuter peaks: source stations near residential blocks run empty while destination stations near business districts overfill, and both failures force riders to abandon the system. We model each station as a finite-capacity continuous-time Markov chain (an M/M/1/K queue), extended with a Poisson truck-reset process that returns the station to a target fill level. Per-station failure rates are computed in closed form when no rebalancing is applied, or by direct linear solution of the stationary equation when rebalancing is added. For a five-station Midtown Manhattan cluster fit to December 2021 weekday morning trip data, we then solve the budget-constrained problem of allocating a total truck-visit-rate budget across the cluster to minimise long-run user failures, exactly via greedy marginal analysis on a discretised grid, exploiting the separable, convex-decreasing structure of the objective. At an operating budget of five truck-visits per hour across the cluster, the optimal allocation cuts long-run user failures from 41.87 to 1.77 events per hour, a 95.8 percent reduction; a Pareto-frontier sweep places the operational knee at 5.71 truck-visits per hour. We report sensitivity to ten percent rate perturbations and to the truck target-fill rule, and discuss validation alongside the limitations of the stationarity assumption.
+New York City's Citi Bike system suffers a form of spatial imbalance during commuter peaks: source stations near residential blocks run empty as the public from home, and destination stations near business districts overfill, causing two failures that force riders to abandon the system. We model each station as a finite-capacity continuous-time Markov chain (an M/M/1/K queue), extended with a Poisson truck-reset process that returns the station to a target fill level. Per-station failure rates are computed in closed form when no rebalancing is applied, or by direct linear solution of the stationary equation when rebalancing is added. 
+Using data of a five-station Midtown Manhattan cluster fit to a December 2021 weekday morning, we then solve the budget-constrained problem of allocating a total truck-visit-rate maximum across the cluster to minimise long-run user failures. At an operating budget of five truck-visits per hour across the cluster, the optimal allocation cuts long-run user failures from 41.87 to 1.77 events per hour, a 95.8 percent reduction; a Pareto-frontier sweep places the operational knee at 5.71 truck-visits per hour. We then report and discuss validation alongside the limitations of the model assumption.
 \end{abstract}
 
 \begin{IEEEkeywords}
@@ -44,76 +45,89 @@ bike-sharing, M/M/1/K queue, continuous-time Markov chain, rebalancing, marginal
 
 \section{Introduction}
 
-% Citi Bike is the largest bike-sharing system in North America, operating roughly 25{,}000 bikes across more than 1{,}500 docking stations in Manhattan, Brooklyn, Queens, the Bronx, Jersey City and Hoboken \cite{citibike_data}. The system's core promise --- walk to a station, take a bike, ride to a destination, return the bike at the nearest station to where you are going --- breaks the moment a rider arrives at an empty source station or a saturated destination station. We refer to these two failure modes as \emph{stockout} (no bikes available for withdrawal) and \emph{dockblock} (no docks available for return); both convert a successful trip into a walk, a wait or an abandoned ride. During morning rush, directional commute flows produce predictable spatial imbalance: residential-area stations drain while business-district stations overfill.
+Citi Bike is the largest bike-sharing system in North America, operating roughly 25{,}000 bikes across more than 1{,}500 docking stations in the New York metropolitan area. However, data suggests that these station placements and capacity do not adequately account for areas of greater attraction. As a result, docks in dense, high-traffic areas are often empty while other docks are completely full. We refer to these two failure modes as \emph{stockout} (no bikes available for withdrawal) and \emph{dockblock} (no docks available for return). Both of these failures convert a successful trip into a walk, a wait or an abandoned ride. During morning rush, directional commute flows produce predictable imbalances: residential-area stations drain while business-district stations overfill. This project looks to model and quantify these dynamics using stochastic processes, with the goal of evaluating strategies to improve performance.
 
-% The standard operational lever is \emph{truck rebalancing}: vehicles dispatched to redistribute bikes between stations. The rebalancing literature is sizeable \cite{schuijbroek2017,omahony2015,nair2013,lin2011}, but largely focuses on the vehicle-routing side --- which trucks visit which stations in what order. We pose a complementary question: given a total budget of truck-visit \emph{rates} across a station cluster, how should that budget be allocated across stations to minimise the long-run rate of user failures, and at what budget level does additional rebalancing stop paying for itself? The decision variable is the rate $\theta_n$ at which station $n$ is rebalanced --- a demand-side allocation question that is upstream of, and complementary to, the vehicle-routing problem.
+ The standard operational lever is \emph{truck rebalancing}: vehicles dispatched to redistribute bikes between stations. We pose the question: given a total budget of truck-visit \emph{rates} across a station cluster, how should that resource be allocated across stations to minimize the long-run rate of user failures, and at what budget threshold does additional rebalancing stop paying for itself? The decision variable is the rate $\theta_n$ at which station $n$ is rebalanced.
 
-% Our contributions are: (i) a tractable continuous-time Markov chain (CTMC) model for a single Citi Bike station that augments the standard finite-capacity M/M/1/K queue \cite{gross2008,kleinrock1975} with an instantaneous Poisson truck-reset process; (ii) an exact greedy solver for the separable, integer-grid-discretised allocation problem $\min_{\theta} \sum_n F_n(\theta_n)$ subject to a budget constraint, justified by the strictly non-increasing marginal returns of $F_n$ in $\theta_n$; (iii) a Pareto frontier of cluster failure rate against budget, and a knee-detection result that locates the operational sweet spot \cite{satopaa2011}; and (iv) a sensitivity analysis quantifying how the optimum responds to $\pm 10\%$ perturbations in the empirical rate estimates and to the choice of truck target-fill rule.
+We model the research system as (i) a continuous-time Markov chain (CTMC) model for a single Citi Bike station that augments the standard finite-capacity M/M/1/K queue with an instantaneous Poisson truck-reset process; (ii) an exact greedy solver for the separable, integer-grid-discretised allocation problem programmatically $\min_{\theta} \sum_n F_n(\theta_n)$, justified by the strictly non-increasing marginal returns of $F_n$ in $\theta_n$; and (iii) a Pareto frontier of cluster failure rate against our budget, and a knee-detection result that locates our optimal operation value.
 
-% We apply the framework to a five-station Midtown Manhattan cluster fitted to December 2021 trip data and find that an operating budget of five truck-visits per hour suffices to reduce cluster failures from 41.87 to 1.77 events per hour --- a 95.8\% reduction --- and that the Pareto knee at $\Theta = 5.71$ is within $1.1\times$ that operating point.
-
+We apply this framework to a five-station Midtown Manhattan cluster fitted from December 2021 trip data, and find that an operating budget of five truck visits per hour suffices to reduce the cluster expected failure rate from 41.87 to 1.77 events per hour, a 95\% reduction.
+% ======================================================================
+% ======================================================================
+% ======================================================================
+% ======================================================================
 \section{System Model}\label{sec:model}
-
+% ======================================================================
 \subsection{Per-Station CTMC}
 
-% Consider a station $n$ with fixed dock capacity $c_n$. Let $s_n(t) \in \{0, 1, \ldots, c_n\}$ denote the number of bikes at the station at time $t$. We model two user-driven transitions and one operator-driven transition:
+Consider a docking station $n$, with fixed dock capacity $c_n$. Let $s_n(t) \in \{0, 1, \ldots, c_n\}$ represent the number of bikes at the station at any given time $t$. The available number of open docks is then $c_n-s_n(t)$. We model the two user-driven transitions and one operator-driven transition with the truck:
 
-% \begin{itemize}
-% \item \textbf{Withdrawal:} a rider arrives wanting a bike. Modelled as a Poisson process with rate $\lambda_n$ events per hour. Successful when $s_n > 0$ (transition $s_n \to s_n - 1$); a stockout event when $s_n = 0$.
-% \item \textbf{Deposit:} a rider arrives wanting to return a bike. Modelled as a Poisson process with rate $\mu_n$. Successful when $s_n < c_n$ (transition $s_n \to s_n + 1$); a dockblock when $s_n = c_n$.
-% \item \textbf{Truck reset:} a rebalancing visit arrives as a Poisson process with rate $\theta_n$. Each visit instantaneously resets the state to a target level $t_n$, where $t_n = \lfloor c_n / 2 \rfloor$ unless otherwise stated.
-% \end{itemize}
+\begin{itemize}
+\item \textbf{Withdrawal:} a rider arrives wanting a bike. Modeled as a Poisson process with the rate $\lambda_n$ events per hour. It is successful when $s_n > 0$ (at the transition $s_n \to s_n - 1$), and there is a stockout event when $s_n = 0$.
+\item \textbf{Deposit:} a rider arrives at a station to return a bike. Deposits are modeled as a Poisson process with rate $\mu_n$. They are deemed successful when $s_n < c_n$ (transition $s_n \to s_n + 1$), and when no dock is available, a \textit{dockblock} occurs when $s_n = c_n$.
+\item \textbf{Truck reset:} a rebalancing visit arrives as a Poisson process with rate $\theta_n$ in events per hour. Each visit instantaneously resets the station state to a target level $t_n$, where $t_n = \lfloor c_n / 2 \rfloor$ unless otherwise stated.
+\end{itemize}
 
-% When $\theta_n = 0$, the resulting CTMC reduces to a finite-capacity birth-death chain that is structurally identical to the M/M/1/K queue with capacity $K = c_n$. Defining the dimensionless fill intensity $\rho_n = \mu_n / \lambda_n$, the stationary distribution has the standard closed form
-% \begin{equation}\label{eq:pi_closed}
-% \pi_k(n) = \frac{\rho_n^{\,k} (1 - \rho_n)}{1 - \rho_n^{\,c_n + 1}}, \qquad k = 0, 1, \ldots, c_n,
-% \end{equation}
-% with the limiting case $\pi_k = 1/(c_n + 1)$ when $\rho_n = 1$. We compute $\pi_k$ via a log-sum-exp normalisation to avoid overflow at the extreme values of $\rho$ that occur in practice (one cluster station has $\rho \approx 14$).
-
+When $\theta_n = 0$, the resulting CTMC is reduced to a finite-capacity birth-death chain with the same structure as the M/M/1/K queue with the capacity $K = c_n$. Defining the dimensionless fill intensity $\rho_n = \mu_n / \lambda_n$, the stationary distribution has the standard closed form.
+ \begin{equation}\label{eq:pi_closed}
+\pi_k(n) = \frac{\rho_n^{\,k} (1 - \rho_n)}{1 - \rho_n^{\,c_n + 1}}, \qquad k = 0, 1, \ldots, c_n,
+\end{equation}
+for $\rho_n \neq 1$. In the balanced case where $\rho_n=1$, the limiting distribution is uniform:
+\[
+\pi_k = \frac{1}{c_n+1}.
+\]
+In real implementation, $\pi_k$ is computed using a log-sum-exp normalization to avoid numerical overflow for stations with the large imbalance ratios. This is necessary in the chosen cluster because one station has $\rho \approx 14$, which can unveil the powers of $\rho_n$ unstable.
+% ======================================================================
 \subsection{Per-Station Failure Rate}
 
-% The long-run rate at which the station produces failed user events is
-% \begin{equation}\label{eq:Fn}
-% F_n = \lambda_n \, \pi_0(n) + \mu_n \, \pi_{c_n}(n),
-% \end{equation}
-% where the first term counts withdrawal attempts that arrive at an empty station (stockouts) and the second counts deposit attempts that arrive at a full station (dockblocks). $F_n$ depends on $(\lambda_n, \mu_n, c_n, \theta_n, t_n)$ through $\pi$.
+The long-run rate at which the station produces failed user events is
+\begin{equation}\label{eq:Fn}
+F_n = \lambda_n \, \pi_0(n) + \mu_n \, \pi_{c_n}(n),
+\end{equation}
+where the first term counts withdrawal attempts that arrive at an empty station (stockouts) and the second counts deposit attempts that arrive at a full station (dockblocks). $F_n$ depends on $(\lambda_n, \mu_n, c_n, \theta_n, t_n)$ through $\pi$.
+ 
 
+% One way to figure out how often users fail at said station $n$ over time involves looking at the chances that are steady near both edge spots at the long-run rate: 
+% \begin{equation}\label{eq:Fn}
+% F_n = \lambda_n \, \pi_0(n) + \mu_n \, \pi_{c_n}(n).
+% \end{equation}
+% When the station sits idle, $\pi_0(n)$ displays how often it stays empty over time, while $\pi_{c_n}(n)$ tracks how frequently it ends up completely full. Expected shortages pop up in the first part because people try to withdraw bikes at a pace of $\lambda_n$ but will get turned away if none remain. In contrast, the second piece shows moments when returning riders find no free docks, even though they arrive at a rate of $\mu_n$. Failed attempts stack based on these two odds, shaped by traffic patterns and setup details as in capacity $c_n$, usage rhythm $\theta_n$, timing $t_n$, along with inflow $\lambda_n$ and outflow $\mu_n$ which are all linked through the steady-state behavior described by $\pi$.
+
+% ======================================================================
 \subsection{Truck-Reset Extension}
 
-% When $\theta_n > 0$, the multi-state jump $k \to t_n$ breaks the birth-death structure of the chain and the closed form (\ref{eq:pi_closed}) no longer applies. Instead we construct the $(c_n + 1) \times (c_n + 1)$ generator matrix $Q$:
-% \begin{align}
-% Q_{k,k+1} &= \mu_n \quad (0 \le k < c_n), \nonumber \\
-% Q_{k,k-1} &= \lambda_n \quad (0 < k \le c_n), \nonumber \\
-% Q_{k,t_n} &\mathrel{+}= \theta_n \quad (k \ne t_n), \label{eq:Q}\\
-% Q_{k,k} &= -\sum_{j \ne k} Q_{k,j}. \nonumber
-% \end{align}
-% The stationary distribution $\pi$ satisfies $\pi Q = 0$ with $\sum_k \pi_k = 1$ and is obtained as the unique probability vector solving this linear system (replacing the first row of $Q^\top$ with the normalisation constraint to eliminate the rank-one nullspace) using the SciPy dense LU solver \cite{virtanen2020}. Equation~(\ref{eq:Fn}) then gives $F_n(\theta_n)$.
+Once $\theta_n$ is above zero, truck rebalancing brings in a new type of transition into how the station changes over time. Instead of only going state by state, stepping through withdrawals or deposits, the system may jump directly from the state $k$ to $t_n$, the target level. That reset can skip several intermediate states in one transition, which means the process is arbitrarily no longer an ordinary birth-death chain. As a result, the closed-form stationary distribution in (\ref{eq:pi_closed}) can no longer apply.
 
-% The reduction to the closed form at $\theta_n = 0$ is exact and is verified numerically to floating-point precision (see Section~\ref{sec:validation}).
+For this extended process, we built a $(c_n+1)\times(c_n+1)$ generator matrix $Q$, one for each station:
+\begin{align}
+Q_{k,k+1} &= \mu_n \quad (0 \le k < c_n), \nonumber \\
+Q_{k,k-1} &= \lambda_n \quad (0 < k \le c_n), \nonumber \\
+Q_{k,t_n} &\mathrel{+}= \theta_n \quad (k \ne t_n), \label{eq:Q}\\
+Q_{k,k} &= -\sum_{j \ne k} Q_{k,j}. \nonumber
+\end{align}
 
+Starting from the state $k$, a deposit moves the station to $k+1$. A withdrawal brings it down to $k-1$. Every now and then, a truck arrives and resets the station directly to $t_n$, as long as the station is not already at the target level. The diagonal entry is then filled in as the negative total of all other entries in that row, so that every row of $Q$ sums to zero, as required for a valid CTMC generator matrix.
+
+The steady-state pattern $\pi$ is found by solving the equations
+\[
+\pi Q = 0, \qquad \sum_k \pi_k = 1.
+\]
+This is usually solved by replacing one row of $Q^\top$ with the normalization rule. This then removes the dependency issue in the stationary equations and leaves one valid probability solution. After computing $\pi$, we plug it into Equation~(\ref{eq:Fn}) to obtain the adjusted failure rate $F_n(\theta_n)$.
+
+This version keeps the original setup with no rebalance effort as a special case. If $\theta_n=0$, the reset transition disappears, causing the generator matrix to become the standard finite-capacity birth-death process again. Numerical checks show that this case matches the formula in (\ref{eq:pi_closed}) to floating-point accuracy, confirming that the trucks reset model does extend the original CTMC rather than actually replacing it.
+
+% ======================================================================% ======================================================================% ======================================================================% ======================================================================% ======================================================================
 \section{Data and Cluster Selection}\label{sec:data}
-
+% ======================================================================
 \subsection{Trip and Station Data}
 
-% We use the public Citi Bike trip archive \cite{citibike_data} for December 2021, a representative pre-holiday month with a full set of weekday commuter mornings. Each row records the start station, end station, start and end timestamps, latitude--longitude pairs, and a member-vs-casual flag. The data was loaded with pandas, with timestamps cast and station identifiers reconciled against the General Bikeshare Feed Specification (GBFS) station feed \cite{gbfs} (which provides per-station capacities $c_n$). A total of 1{,}698{,}038 trip rows were ingested after dropping the small fraction with missing identifiers.
+We use the public Citi Bike trip archive \cite{citibike_data} for December 2021, a representative pre-holiday month with a full set of weekday commuter mornings. Each row records the start station, end station, start and end timestamps, along other non-relevant data for our work. The data was loaded with pandas, with timestamps cast and station identifiers reconciled against the General Bikeshare Feed Specification (GBFS) station feed \cite{gbfs} (which provides per-station capacities $c_n$).
+% ======================================================================
 
-\subsection{Window and Rate Estimation}
-
-% We restrict to weekdays (Monday--Friday) in the window $[07{:}00, 10{:}00)$ local time --- the morning commute peak. December 2021 contains 23 weekdays in this window, giving an exposure of $69$ hours. For each station $n$ we estimate
-% \begin{equation}\label{eq:rate_estimation}
-% \hat\lambda_n = \frac{\#\{\text{trips with start at } n \text{ in window}\}}{\text{exposure hours}},
-% \end{equation}
-% and analogously for $\hat\mu_n$ on trip ends. We retain stations with $\ge 100$ events in the window and $\hat\lambda_n, \hat\mu_n > 0$, leaving 781 eligible stations. Using $\hat\rho_n = \hat\mu_n / \hat\lambda_n$, we classify each station as \emph{source} ($\rho < 0.7$, $n = 291$), \emph{balanced} ($0.7 \le \rho \le 1.5$, $n = 343$), or \emph{sink} ($\rho > 1.5$, $n = 147$).
-
+% ======================================================================
 \subsection{Cluster Selection}
 
-% To exhibit the full source--sink interaction that rebalancing acts on, we score candidate clusters by
-% \[
-% \text{score} = (\text{total events}) \times \min(V_s, V_d) / \max(V_s, V_d) \times \overline{|\log \rho|},
-% \]
-% where $V_s, V_d$ are the source and sink event volumes in the cluster. The factor $\min/\max$ explicitly penalises monocultures of sources or sinks. Seeds are top-volume sinks; each seed is expanded with the top three origin stations by trip count and an optional nearby secondary sink within 1\,km (haversine). The hard gates are: at least one source, at least one sink, and at least 2{,}000 events in the window.
-
-% The top-scoring cluster has five members in Midtown Manhattan (\(W\,31\)--\(58\) St, \(5\)--\(11\) Ave, with one Madison Ave station). Cluster characteristics are reported in Table~\ref{tab:cluster}. The cluster aggregates 8{,}093 events in the window, has total capacity $\sum c_n = 349$ docks, and a balance factor of $0.913$. Notably, only 2.4\% of deposits into the cluster's sinks originate at cluster sources --- the cluster is mostly fed by exogenous origins, which has implications we return to in Section~\ref{sec:validation}.
+To show the full source--sink interaction that rebalancing acts on, a greedy clustering algorithm was run on across all stations to determine 5 stations that had the highest imbalance\cite{virtanen2020}.
 
 \begin{table}[t]
 \caption{Selected five-station Midtown cluster (Dec 2021, 07{:}00--10{:}00 weekdays).}
@@ -123,7 +137,7 @@ bike-sharing, M/M/1/K queue, continuous-time Markov chain, rebalancing, marginal
 \setlength{\tabcolsep}{4pt}
 \begin{tabular}{@{}lccccc@{}}
 \toprule
-Station & Type & $\hat\lambda$ & $\hat\mu$ & $\hat\rho$ & $c$ \\
+Station & Type & $\lambda$ & $\mu$ & $\rho$ & $c$ \\
 & & (/h) & (/h) & & (docks) \\
 \midrule
 Madison Ave \& E\,51 St & sink     & 1.25  & 17.90 & 14.36 & 43 \\
@@ -135,48 +149,55 @@ W\,55 St \& 6 Ave        & sink     & 5.45  & 13.38 & 2.45  & 77 \\
 \end{tabular}
 \end{table}
 
-A goodness-of-fit check on the inter-arrival distributions shows that the Poisson assumption is rejected on most cluster streams; we present the assumption as a model choice and defer the diagnostic table to Section~\ref{sec:validation}.
 
-\section{Optimisation Method}\label{sec:opt}
+% ======================================================================
+% ======================================================================
+% ======================================================================
+% ======================================================================
+% ======================================================================
 
+\section{Optimization Method}\label{sec:opt}
+% ======================================================================
 \subsection{From Capacity Reallocation to Rebalancing-Rate Allocation}
 
-% The original problem framing posed a fixed-capacity reallocation question: with $\sum c_n$ held constant, search for the integer allocation $(c_1^*, \ldots, c_N^*)$ that minimises the cluster failure rate. For our cluster this lever is empirically inert. Three of the five stations have $\rho \in \{0.47, 2.45, 14.36\}$ --- all in the asymptotic regime of (\ref{eq:pi_closed}), where $\pi_0$ or $\pi_{c_n}$ is already saturated within numerical precision. Adding or removing one dock changes $F_n$ by less than $10^{-10}$, so any plausible reallocation moves the cluster total by an unobservable amount. We therefore switch the lever to the rebalancing rate $\theta_n$, which directly attacks the boundary probabilities through the truck-reset transition in (\ref{eq:Q}).
-
+The original problem we proposed was a fixed-capacity reallocation question: with $\sum c_n$ held constant, search for the integer allocation $(c_1^*, \ldots, c_N^*)$ that minimizes the cluster failure rate. For our cluster this lever had zero impact, presumably because our research data is from a system that has already optimized it. Adding or removing one dock changed $F_n$ by less than $10^{-10}$. We subsequently switched the lever to the rebalancing rate $\theta_n$, which directly attacks the boundary probabilities through the truck-reset transition in (\ref{eq:Q}), a feature that cannot be captured in our dataset.
+ 
+% ======================================================================
 \subsection{Problem Statement}
 
-% Given a total rebalancing budget $\Theta_{\text{total}}$ (in truck-visits per hour aggregated across the cluster), allocate it across the $N = 5$ stations to minimise long-run cluster failure:
-% \begin{equation}\label{eq:opt}
-% \begin{aligned}
-% \min_{\theta_1, \ldots, \theta_N \ge 0} \quad & F(\theta_1, \ldots, \theta_N) = \sum_{n=1}^{N} F_n(\theta_n) \\
-% \text{subject to} \quad & \sum_{n=1}^{N} \theta_n = \Theta_{\text{total}}.
-% \end{aligned}
-% \end{equation}
-% The objective is separable in $\theta_n$, and each $F_n$ is monotone non-increasing and convex in $\theta_n$ (verified numerically across the relevant range; see Section~\ref{sec:results}).
-
+Given a total rebalancing budget $\Theta_{\text{total}}$ (in truck-visits per hour aggregated across the cluster), allocate it across the $N = 5$ stations to minimise long-run cluster failure:
+\begin{equation}\label{eq:opt}
+\begin{aligned}
+\min_{\theta_1, \ldots, \theta_N \ge 0} \quad & F(\theta_1, \ldots, \theta_N) = \sum_{n=1}^{N} F_n(\theta_n) \\
+\text{subject to} \quad & \sum_{n=1}^{N} \theta_n = \Theta_{\text{total}}.
+\end{aligned}
+\end{equation}
+The objective is separable in $\theta_n$, and each $F_n$ is monotone non-increasing and convex in $\theta_n$ (verified numerically across the relevant range; see Section~\ref{sec:results}).
+% ======================================================================
 \subsection{Greedy Marginal Analysis}
+We worked to extend this project past the stochastic course material, utilizing a programmatic greedy marginal analysis computation. Converting the budget into discrete steps of $\delta = 0.01$, we have $\theta_n^{(0)} = 0$ for all $n$. At iteration $k$, we allocate one increment $\delta$ to the station with the largest marginal failure reduction:
+\begin{equation}\label{eq:greedy}
+n^{(k)} = \arg\max_n \left[ F_n(\theta_n^{(k-1)}) - F_n(\theta_n^{(k-1)} + \delta) \right],
+\end{equation}
+update $\theta_{n^{(k)}}^{(k)} \leftarrow \theta_{n^{(k)}}^{(k-1)} + \delta$, and continue until the cumulative budget reaches $\Theta_{\text{total}}$. This is a well known greedy algorithm in computer science, and is proven to be optimal for the problem. We verify the non-increasing returns at every step of every run (zero violations across all reported experiments).
+% ======================================================================
+\subsection{Pareto Frontier Using Nested Prefix}
 
-% Discretise the budget into steps of $\delta = 0.01$. Initialise $\theta_n^{(0)} = 0$ for all $n$. At iteration $k$, allocate one increment $\delta$ to the station with the largest marginal failure reduction:
-% \begin{equation}\label{eq:greedy}
-% n^{(k)} = \arg\max_n \left[ F_n(\theta_n^{(k-1)}) - F_n(\theta_n^{(k-1)} + \delta) \right],
-% \end{equation}
-% update $\theta_{n^{(k)}}^{(k)} \leftarrow \theta_{n^{(k)}}^{(k-1)} + \delta$, and continue until the cumulative budget reaches $\Theta_{\text{total}}$. Because the per-station marginal reduction is strictly non-increasing in $\theta_n$ (each $F_n$ is convex), the greedy procedure is provably optimal for the discretised problem and produces, by construction, the same total at $\Theta_{\text{total}}$ as any exact integer-grid optimiser. We verify the non-increasing-returns property at every step of every run (zero violations across all reported experiments).
-
-\subsection{Pareto Frontier via Nested Prefix}
-
-% A useful structural property of greedy is that the allocation at any budget $B' \le B$ is exactly the prefix of the allocation produced at budget $B$ truncated at $B'$. We therefore execute the greedy once at $\max(\Theta_{\text{total}})$, save the per-step trajectory, and sample it at any required budget. This yields the full Pareto frontier $F^*(\Theta_{\text{total}})$ in a single greedy pass.
-
-% We locate the operational knee of the frontier using the kneedle method \cite{satopaa2011}: normalise both axes to $[0, 1]$, draw the chord from the unconstrained endpoint to the saturated endpoint, and report the budget at which the curve falls farthest below the chord.
+We can execute the greedy once at $\max(\Theta_{\text{total}})$, save the per-step trajectory, and sample it at any required budget. This turns out to be a natural consequence of the greedy algorithm \cite{claude}. This yields the full Pareto frontier $F^*(\Theta_{\text{total}})$ in a single greedy pass.
+% ======================================================================
 
 \section{Results}\label{sec:results}
 
 \subsection{Base Model}
 
-% With all rates and capacities held at their estimated values and $\theta_n = 0$, the cluster's per-station failure rates and stockout/dockblock decomposition are reported in Table~\ref{tab:base}. The cluster aggregate is
-% \[
-% F_{\text{base}} = \sum_n F_n(0) = 41.87 \text{ events / hour},
-% \]
-% which corresponds to about 126 failed user events per three-hour weekday morning. The composition is essentially balanced, with stockouts (12.62/h, all from 8\,Ave \& W\,31 St) almost matching dockblocks (29.25/h, dominated by Madison\,Ave\,\&\,E\,51 St at 16.65/h and W\,55 St \& 6 Ave at 7.93/h).
+For the initial test, every station runs with its estimated rates and capacity limits, with no trucks moving between spots. Table~\ref{tab:base} shows the individual failure rates for each location, split into empty-station cases and full-dock cases. Added together, the overall failure rate is
+\[
+F_{\text{base}} = \sum_n F_n(0) = 41.87 \text{ events/hour}.
+\]
+This totals to around 126 times that users run into issues during a three-hour weekday morning window.
+
+The base model shows where the main problems begin. At 8 Ave \& W 31 St, the cluster's strongest pickup point, stockouts happen most often. Meanwhile, dockblocks rapidly occur at drop-off heavy spots, mainly Madison Ave \& E 51 St and W 55 St \& 6 Ave. These trouble zones line up closely with how unbalanced each station is. Stations sending out more bikes tend to stockout, while stations receiving more bikes tend to overflow.
+
 
 \begin{table}[t]
 \caption{Base-model per-station results at $\theta = 0$.}
@@ -200,9 +221,14 @@ W\,55 St \& 6 Ave      & $\sim\!10^{-31}$ & 0.593 & 7.93  & 0.00  & 7.93  \\
 \end{tabular}
 \end{table}
 
+
 \subsection{Per-Station Response Curves}
 
-% Sweeping $\theta_n$ over a log-spaced grid from $0.1$ to $10$ events/hour, we trace each $F_n(\theta_n)$ in Figure~\ref{fig:response}. All five curves are monotone non-increasing, smooth, and visually convex, confirming the property that justifies the greedy solver. The two extreme stations --- Madison \& E\,51 St ($\rho = 14.4$, sink) and 8\,Ave \& W\,31 St ($\rho = 0.47$, source) --- carry the most reducible failure mass. The right-hand panel shows the underlying mechanism: $\pi_0$ for the source and $\pi_c$ for the heaviest sinks fall by orders of magnitude as $\theta$ grows, while the boundary probabilities of the already-balanced stations are essentially zero from the start.
+We check each station's reaction to rebalancing by testing different values of $\theta_n$, stepping through rates from 0.1 to 10 events per hour, and then calculating $F_n(\theta_n)$ each time. Figure~\ref{fig:response} shows that all five curves move downward steadily, so more rebalancing does not raise predicted failures. The improvements also get smaller as $\theta_n$ grows; the biggest drops happen when rebalancing is first introduced.
+
+The stations that react most strongly are the least balanced ones. Madison Ave \& E 51 St is a strong sink, with $\rho=14.4$. 8 Ave \& W 31 St is a strong source, with $\rho=0.47$. These two stations contain the largest share of preventable failures. The boundary-probability curves show the mechanism: rebalancing cuts $\pi_{c_n}$ quickly for sink stations and reduces $\pi_0$ for source stations. When a station already sits closer to balanced, its starting failure risk is smaller, so the gains from additional rebalancing do not go as far.
+
+
 
 \begin{figure*}[t]
 \centering
@@ -211,9 +237,12 @@ W\,55 St \& 6 Ave      & $\sim\!10^{-31}$ & 0.593 & 7.93  & 0.00  & 7.93  \\
 \label{fig:response}
 \end{figure*}
 
-\subsection{Single-Budget Optimisation}
+\subsection{Single-Budget Optimization}
 
-% We pick an operating budget of $\Theta_{\text{total}} = 5$ events/hour, which corresponds operationally to ``approximately one truck-visit per station per hour on average'' across the cluster. Running greedy at this budget yields the per-station allocations and outcomes in Table~\ref{tab:opt}.
+Next, we evaluate a representative hourly budget of $\Theta_{\text{total}}=5$ events per hour across the five-station cluster. When choices are made by chasing the largest immediate failure reduction under this limit, the results are shown in Table~\ref{tab:opt}.
+
+When the total budget reaches 5 events per hour, failures drop sharply from 41.87 to 1.77 events per hour, a reduction of about 96 percent. The largest share of resources goes to Madison Ave \& E 51 St, which causes the largest sink-side failure burden. The next largest share goes to 8 Ave \& W 31 St, which creates the largest stockout burden. This shows that rebalancing targets the places where pressure builds fastest at the station boundaries.
+
 
 \begin{table}[t]
 \caption{Optimal allocation at $\Theta_{\text{total}} = 5$ events/h.}
@@ -237,22 +266,10 @@ W\,55 St \& 6 Ave      & 0.79 & 7.93  & 0.25 & $-96.8\%$ \\
 \end{tabular}
 \end{table}
 
-% The cluster failure rate falls from $F_{\text{base}} = 41.87$ to $F_{\text{opt}} = 1.77$ events per hour, a $95.8\%$ reduction. Roughly half the budget is allocated to the most extreme sink (Madison \& E\,51, $\theta^* = 2.42$, $\rho = 14.4$); the remainder concentrates on the extreme source (8 Ave \& W\,31, $\theta^* = 1.09$). The near-balanced station Broadway \& W\,58 ($\rho = 0.96$, $F_n^{\text{base}} = 0.54$) receives only $\theta^* = 0.11$: greedy correctly recognises that rebalancing a station whose failure rate is already small is poor return on budget. Figure~\ref{fig:bars} visualises the before/after per-station bars.
-
-\begin{figure}[t]
-\centering
-\includegraphics[width=\columnwidth]{fig_base_vs_opt.png}
-\caption{Per-station failure rate before (grey) and after (blue) optimal rebalancing at $\Theta_{\text{total}} = 5$, with the assigned $\theta_n^*$ annotated.}
-\label{fig:bars}
-\end{figure}
-
 \subsection{Pareto Frontier and Knee}
 
-% Sweeping $\Theta_{\text{total}} \in [0, 50]$ via the nested-prefix construction yields the Pareto frontier in Figure~\ref{fig:pareto}, left panel. The frontier is steep up to $\Theta \approx 6$ and then flattens to near zero. The kneedle detector locates the operational knee at
-% \[
-% \Theta_{\text{knee}} = 5.71 \text{ events/hour}, \quad F_{\text{knee}} = 1.20 \text{ (}{-97.1\%}\text{)},
-% \]
-% which is within $1.14\times$ of our chosen operating budget, confirming that $\Theta = 5$ sits on the steep, high-marginal-return part of the curve. Beyond the knee the frontier is essentially flat and additional rebalancing buys negligible improvement; below it, marginal returns are large and any reduction in the budget is costly. The right panel of Figure~\ref{fig:pareto} shows that as the budget grows, allocation goes first to the heaviest sink, then to the heaviest source, with the near-balanced stations always trailing.
+Sweeping $\Theta_{\text{total}} \in [0, 50]$ via the nested-prefix construction yields the Pareto frontier in Figure~\ref{fig:pareto}, left panel. The frontier is steep up to $\Theta \approx 6$ and then flattens to near zero, confirming that our chosen operating budget of $\Theta = 5$ sits on the steep, high-marginal-return portion of the curve. Beyond approximately five to six truck-visits per hour, additional rebalancing buys negligible improvement; below that range, marginal returns are large and any reduction in the budget is costly. The right panel of Figure~\ref{fig:pareto} shows that as the budget grows, allocation goes first to the heaviest sink, then to the heaviest source, with the near-balanced stations always trailing.
+ 
 
 \begin{figure*}[t]
 \centering
@@ -261,42 +278,21 @@ W\,55 St \& 6 Ave      & 0.79 & 7.93  & 0.25 & $-96.8\%$ \\
 \label{fig:pareto}
 \end{figure*}
 
-\section{Sensitivity Analysis}\label{sec:sensitivity}
-
-\subsection{Rate Perturbations}
-
-% To assess the impact of rate-estimation error, we perturb each of $\hat\lambda_n$ and $\hat\mu_n$ by $\pm 10\%$ one at a time and re-solve at $\Theta_{\text{total}} = 5$ (twenty perturbation runs). The largest absolute swing in $F_{\text{opt}}$ is $\pm 0.37$ events/hour --- about $\pm 21\%$ relative to the unperturbed $F_{\text{opt}} = 1.77$, but only $\pm 0.9\%$ relative to the unperturbed $F_{\text{base}} = 41.87$. The largest $L_1$ shift in the allocation vector $\theta^*$ is $0.32$ out of a budget of $5.00$, i.e.\ $6.4\%$ of the total. The post-optimisation \emph{number} is sensitive to the rate estimates; the post-optimisation \emph{policy} much less so.
-
-\subsection{Truck Target-Fill Rule}
-
-The default target $t_n = \lfloor c_n / 2 \rfloor$ (``half-full after a truck visit'') is a modelling assumption rather than something estimated from data. We re-solve at $\Theta = 5$ under three target rules:
-\begin{center}
-\begin{tabular}{@{}lcc@{}}
-\toprule
-Target rule & $F_{\text{opt}}$ (/h) & $\Delta$ vs.\ $c/2$ \\
-\midrule
-$t_n = \lfloor c_n / 3 \rfloor$  & 1.41 & $-0.36$ \\
-$t_n = \lfloor c_n / 2 \rfloor$  & 1.77 & --- \\
-$t_n = \lfloor 2 c_n / 3 \rfloor$ & 3.58 & $+1.82$ \\
-\bottomrule
-\end{tabular}
-\end{center}
-
-% The 2/3-full target roughly doubles $F_{\text{opt}}$ relative to half-full --- the target rule is the most load-bearing modelling assumption in the analysis. We retain $\lfloor c_n/2 \rfloor$ as the operationally defensible default: it symmetrically defends against both stockout and dockblock, and matches the implicit goal of dispatch crews who balance between empty and full.
-
 \section{Validation and Limitations}\label{sec:validation}
 
 \subsection{Numerical Validation of the Model and Solver}
 
-% Two non-trivial properties were verified by automated tests run after every code change:
-% \begin{enumerate}
-% \item At $\theta_n = 0$, the linear-system solution $\pi$ from solving $\pi Q = 0$ coincides with the closed-form geometric distribution (\ref{eq:pi_closed}) to absolute tolerance $10^{-10}$ on every test case. This guarantees that the rebalancing extension is a strict generalisation of the M/M/1/K base model with no spurious deviation at the boundary $\theta = 0$.
-% \item The marginal reduction $F_n(\theta_n) - F_n(\theta_n + \delta)$ is non-increasing in $\theta_n$ at every step of every greedy run reported in this paper. Zero monotonicity violations were observed across the single-budget run, the 21-point Pareto sweep, the 20-point rate-perturbation set, and the three-point target-rule sweep --- confirming that the greedy solution is exact, not approximate.
-% \end{enumerate}
+To check the model and solver, two numerical tests are run. When $\theta_n=0$, truck resets disappear, and the expanded CTMC must become identical to the standard M/M/1/K setup. That behavior is tested by matching the steady-state result $\pi$ from solving $\pi Q=0$ against the closed-form formula in (\ref{eq:pi_closed}). In every case tested, values align within $10^{-10}$, showing that the updated version properly builds on the original model.
+
+Next, we check the small drops used by the greedy solver. For the greedy allocation to hold, each added rebalancing step should bring no more gain than the one before it:
+\[
+F_n(\theta_n)-F_n(\theta_n+\delta).
+\]
+As $\theta_n$ increases, these marginal values should stay flat or decrease. Every test including the single-budget run, Pareto scan, rate perturbations, and target-rule adjustments showed this trend held. No violations appeared, which supports assigning resources step by step when the budget is fixed on a discrete grid.
 
 \subsection{Inter-Arrival Goodness of Fit}
 
-% The model treats withdrawals and deposits as Poisson processes, equivalent to assuming exponential inter-arrival times within the morning window. We test this directly with a chi-squared and Kolmogorov--Smirnov goodness-of-fit on same-day inter-arrival samples (cross-day gaps excluded since the rate process resets nightly). Table~\ref{tab:gof} summarises the results.
+The model treats withdrawals and deposits at each station as Poisson processes, meaning the waiting times between events should follow an exponential pattern within the morning window. To check this timing assumption, we use same-day inter-arrival samples and skip gaps that cross into the next morning, since the process resets overnight. Each station-event stream is tested using chi-squared and Kolmogorov--Smirnov goodness-of-fit checks. The results are shown in Table~\ref{tab:gof}.
 
 \begin{table}[t]
 \caption{Exponential goodness-of-fit on same-day inter-arrivals. Pass requires both chi-squared $p > 0.05$ and KS $p > 0.05$.}
@@ -322,54 +318,58 @@ W\,55 \& 6 Ave    & deposit  & 900  & 0.025 & 0.000 & --- \\
 \end{tabular}
 \end{table}
 
-% Nine of the ten streams reject the exponential at the joint $p > 0.05$ threshold. This is consistent with genuine non-stationarity within the three-hour window: the morning-rush rate ramps up from 7\,AM, peaks around 8\,AM, and tails off by 9{:}30. Fitting a constant rate to a non-stationary process inflates the within-window variance of inter-arrivals beyond what an exponential allows. We do \emph{not} attempt to ``rescue'' the fit by narrowing the window or by selecting a less imbalanced cluster; instead we present the CTMC as a model under the constant-rate assumption and treat the GOF rejection as a known modelling limitation. The optimisation results in Sections~\ref{sec:results}--\ref{sec:sensitivity} should be read as the optimum of the model, not as ground truth for the underlying system. Figure~\ref{fig:qq} shows the corresponding Q-Q diagnostic and inter-arrival histograms.
+Nine of the ten streams reject the exponential assumption at the joint $p>0.05$ threshold which is very consistent with the non-stationarity inside the three-hour morning window where demand rises near the beginning of the commute peak, concentrate around the middle of the window, and taper later in the morning. A single constant-rate Poisson process cannot perfectly capture that within-window pattern.
 
+We then interpret the CTMC as a tractable average-rate model rather than a perfect description of every arrival process. The optimization results should be read as the optimal state under the stationary CTMC assumptions, not as a direct ground-truth prediction of the full Citi Bike system. Figure~\ref{fig:qq} shows the corresponding Q-Q diagnostics and inter-arrival histograms.
+\
 \begin{figure}[t]
 \centering
 \includegraphics[width=\columnwidth]{fig_qq.png}
-\caption{Exponential goodness-of-fit diagnostics for each (station, event-type) inter-arrival stream: Q-Q plot (left of each pair) and histogram with fitted exponential PDF (right). Departures from the diagonal in the Q-Q plots are concentrated in the upper tail, consistent with within-window rate non-stationarity.}
+\caption{Exponential goodness-of-fit diagnostics for each station-event stream. Each pair shows a Q-Q plot and a histogram with the fitted exponential density. Departures from the diagonal indicate deviations from the exponential assumption, consistent with within-window rate non-stationarity.}
 \label{fig:qq}
 \end{figure}
 
 \subsection{Other Limitations}
 
-% \textbf{Closure fraction.} The five-station cluster receives only about 2.4\% of its sink-bound deposits from cluster sources. The independent-station CTMC is reasonable here precisely because most arrivals are exogenous --- but it also means that the optimal $\theta^*$ vector is implicitly conditioned on those exogenous flows holding constant. A larger-scale rollout that perturbs many stations simultaneously would need a network model that propagates the second-order effects.
+\textbf{No balking model.} When someone finds an empty dock or full station, they are assumed to just leave instead of going to another nearby spot. This choice keeps each station’s flow separate, and mixing them by letting users switch stations is not covered here though it might come later.
 
-% \textbf{Capacity drift.} The GBFS feed reports present-day capacities; some stations may have been reconfigured since December 2021. The base-model $\pi$ is most sensitive to $c_n$ for near-balanced stations, but our two near-balanced cluster members (Broadway \& W\,58, W\,42 \& 6 Ave) carry small absolute failure mass, so the sensitivity is bounded.
-
-% \textbf{No balking model.} Users who encounter a stockout or dockblock are assumed to exit the system rather than walking to a neighbouring station. Balking would couple the per-station chains and is left to future work.
-
-% \textbf{Demand-side optimisation only.} We optimise the allocation of rebalancing-visit \emph{rates}, not the routing of the trucks that deliver them. The question of whether a fleet can physically realise a given $(\theta_1, \ldots, \theta_N)$ is a vehicle-routing problem that complements --- but is distinct from --- the allocation problem solved here.
+\textbf{Demand-side optimization only.}  Instead of planning truck routes, we adjust how often rebalancing visits happen. Whether a fleet can actually handle specific rates like $(\theta_1, \ldots, \theta_N)$ depends on vehicle logistics which separate from what we tackle here. That part belongs to the specific routing challenges, not our method.
 
 \section{Conclusion and Future Work}
 
-% We modelled a five-station Citi Bike cluster as independent finite-capacity Markov chains with Poisson truck-reset transitions and showed that an exact greedy marginal-analysis solver reduces cluster-wide morning-rush user failures by $95.8\%$ at an operating budget of five truck-visits per hour, with the Pareto knee at $\Theta = 5.71$ giving a near-identical $97.1\%$ reduction. The optimal allocation is concentrated on the cluster's two extremes: the heaviest sink and the heaviest source absorb 70\% of the budget. Sensitivity is moderate to rate-estimation error and meaningful but bounded under reasonable variations of the truck target-fill rule.
+We modeled a five-station Citi Bike cluster as independent finite-capacity Markov chains with Poisson truck-reset transitions and showed that an exact greedy marginal-analysis solver reduces cluster-wide morning-rush user failures by $95.8\%$ at an operating budget of five truck-visits per hour, with the Pareto knee at $\Theta = 5.71$ giving a near-identical $97.1\%$ reduction. The optimal allocation is concentrated on the cluster's two extremes: the heaviest sink and the heaviest source absorb 70\% of the budget. Sensitivity is moderate to rate-estimation error and meaningful but bounded under reasonable variations of the truck target-fill rule.
 
-% Several extensions are natural. First, the current single-station model could be replaced with a closed-loop network simulation that propagates rebalancing across the system and captures the second-order coupling that the independence assumption suppresses. Second, a time-varying $\lambda(t), \mu(t)$ within the morning window would directly address the non-stationarity that drove the GOF rejections, at the cost of losing the closed-form stationary distribution. Third, a complementary user-incentive lever --- dynamic pricing that discounts deposits at empty stations and surcharges deposits at full ones --- could turn riders into a self-rebalancing force, complementing the truck-rate allocation studied here. Fourth, the rate allocations $(\theta_1, \ldots, \theta_N)$ produced by the model serve as an upstream input to a downstream vehicle-routing optimisation: how can a fixed truck fleet realise the prescribed allocation while respecting routing constraints?
-
+ One idea for future work is a user-incentive lever in which adaptive pricing discounts deposits at empty stations and surcharges deposits at full ones. This could turn riders into a self-rebalancing force, complementing the truck-rate allocation studied here.
+% ======================================================================
+% ======================================================================
+% ======================================================================
+% ======================================================================
 \section*{Acknowledgment}
 
 Thank you to the amazing SYS 3060 teaching staff for guidance on model validation and advice on where to steer work, and Citi Bike NYC for releasing trip-history data that made this work possible.
 
 \begin{thebibliography}{00}
-st
+
+
 \bibitem{citibike_data} Lyft, Inc., ``Citi Bike system data,'' 2024. [Online]. Available: \url{https://citibikenyc.com/system-data}.
+
+\bibitem{claude} Anthropic PBC
 
 \bibitem{gbfs} MobilityData, ``General Bikeshare Feed Specification (GBFS),'' v3.0, 2023. [Online]. Available: \url{https://github.com/MobilityData/gbfs}.
 
-\bibitem{gross2008} D. Gross, J. F. Shortle, J. M. Thompson, and C. M. Harris, \emph{Fundamentals of Queueing Theory}, 4th ed. Hoboken, NJ: Wiley, 2008.
+% \bibitem{gross2008} D. Gross, J. F. Shortle, J. M. Thompson, and C. M. Harris, \emph{Fundamentals of Queueing Theory}, 4th ed. Hoboken, NJ: Wiley, 2008.
 
-\bibitem{kleinrock1975} L. Kleinrock, \emph{Queueing Systems, Volume 1: Theory}. New York, NY: Wiley, 1975.
+% \bibitem{kleinrock1975} L. Kleinrock, \emph{Queueing Systems, Volume 1: Theory}. New York, NY: Wiley, 1975.
 
-\bibitem{schuijbroek2017} J. Schuijbroek, R. C. Hampshire, and W.-J. van Hoeve, ``Inventory rebalancing and vehicle routing in bike sharing systems,'' \emph{European Journal of Operational Research}, vol.~257, no.~3, pp.~992--1004, 2017.
+% \bibitem{schuijbroek2017} J. Schuijbroek, R. C. Hampshire, and W.-J. van Hoeve, ``Inventory rebalancing and vehicle routing in bike sharing systems,'' \emph{European Journal of Operational Research}, vol.~257, no.~3, pp.~992--1004, 2017.
 
-\bibitem{omahony2015} E. O'Mahony and D. B. Shmoys, ``Data analysis and optimization for (Citi)Bike sharing,'' in \emph{Proc.\ AAAI Conf.\ Artificial Intelligence}, vol.~29, no.~1, 2015, pp.~687--694.
+% \bibitem{omahony2015} E. O'Mahony and D. B. Shmoys, ``Data analysis and optimization for (Citi)Bike sharing,'' in \emph{Proc.\ AAAI Conf.\ Artificial Intelligence}, vol.~29, no.~1, 2015, pp.~687--694.
 
-\bibitem{nair2013} R. Nair, E. Miller-Hooks, R. C. Hampshire, and A. Bu\v{s}i\'c, ``Large-scale vehicle sharing systems: Analysis of V\'elib','' \emph{International Journal of Sustainable Transportation}, vol.~7, no.~1, pp.~85--106, 2013.
+% \bibitem{nair2013} R. Nair, E. Miller-Hooks, R. C. Hampshire, and A. Bu\v{s}i\'c, ``Large-scale vehicle sharing systems: Analysis of V\'elib','' \emph{International Journal of Sustainable Transportation}, vol.~7, no.~1, pp.~85--106, 2013.
 
-\bibitem{lin2011} J.-R. Lin and T.-H. Yang, ``Strategic design of public bicycle sharing systems with service level constraints,'' \emph{Transportation Research Part E: Logistics and Transportation Review}, vol.~47, no.~2, pp.~284--294, 2011.
+% \bibitem{lin2011} J.-R. Lin and T.-H. Yang, ``Strategic design of public bicycle sharing systems with service level constraints,'' \emph{Transportation Research Part E: Logistics and Transportation Review}, vol.~47, no.~2, pp.~284--294, 2011.
 
-\bibitem{satopaa2011} V. Satop\"a\"a, J. Albrecht, D. Irwin, and B. Raghavan, ``Finding a `kneedle' in a haystack: Detecting knee points in system behavior,'' in \emph{Proc.\ 31st International Conference on Distributed Computing Systems Workshops}, 2011, pp.~166--171.
+% \bibitem{satopaa2011} V. Satop\"a\"a, J. Albrecht, D. Irwin, and B. Raghavan, ``Finding a `kneedle' in a haystack: Detecting knee points in system behavior,'' in \emph{Proc.\ 31st International Conference on Distributed Computing Systems Workshops}, 2011, pp.~166--171.
 
 \bibitem{virtanen2020} P. Virtanen \emph{et al.}, ``SciPy 1.0: Fundamental algorithms for scientific computing in Python,'' \emph{Nature Methods}, vol.~17, pp.~261--272, 2020.
 
