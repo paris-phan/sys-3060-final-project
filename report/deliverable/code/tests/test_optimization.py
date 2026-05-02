@@ -3,6 +3,9 @@
 The key test (#1) against the base-model CSV exercises the entire stack
 end-to-end: optimize_theta_budget with theta_total=0 should reproduce
 F_base exactly (modulo floating point).
+
+# Citation
+Developed alongside Claude Code (Opus 4.6)
 """
 
 from pathlib import Path

@@ -24,6 +24,7 @@ The API:
                                   trace is equivalent to re-running at each
                                   budget).
 
+# Citation
 Developed alongside Claude Code (Opus 4.6)
 
 """

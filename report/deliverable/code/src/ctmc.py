@@ -10,6 +10,10 @@ Rebalanced model adds a third transition type: with rate theta, the state
 jumps from any k != t to a fixed target level t. This makes the chain
 non-birth-death (multi-state jumps), so the stationary distribution has
 no closed form -- solve pi Q = 0 as a linear system instead.
+
+# Citation
+Developed alongside Claude Code (Opus 4.6)
+
 """
 
 from __future__ import annotations

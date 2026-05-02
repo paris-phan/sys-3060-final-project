@@ -1,5 +1,5 @@
 """Geographic helpers for station clustering."""
-
+# Citation
 # Developed alongside Claude Code (Opus 4.6)
 
 from __future__ import annotations

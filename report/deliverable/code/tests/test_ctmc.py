@@ -1,5 +1,8 @@
 """Sanity checks for the closed-form station model."""
 
+# Citation
+# Developed alongside Claude Code (Opus 4.6)
+
 import numpy as np
 import pytest
 

@@ -3,6 +3,9 @@
 **Authors.** Spencer Arnold, Paris Phan, Garrett Uthlaut.
 **Course.** SYS 3060 — Stochastic Decision Models, University of Virginia, Spring 2026.
 
+# Citation
+This readme was written with assistance from Claude Opus 4.7 to document the codebase
+
 ## What this project does
 
 We model a five-station Midtown Manhattan Citi Bike cluster as a set of independent finite-capacity continuous-time Markov chains (M/M/1/K queues) extended with a Poisson truck-rebalancing reset, then solve the budget-constrained allocation problem of distributing a total truck-visit-rate budget across the cluster to minimise long-run user failures (stockouts + dockblocks). At an operating budget of five truck-visits per hour, the optimal allocation reduces cluster failures from **41.87 → 1.77 events per hour (a 95.8% reduction)**; the Pareto knee falls at 5.71 truck-visits per hour.
@@ -70,14 +73,6 @@ cd report && pdflatex report.tex && pdflatex report.tex
 ```
 
 Notebook 01 takes a few minutes on first run (downloads the 930 MB Dec 2021 trip zip into `data/raw/`); subsequent runs are cached and complete in under a minute. Notebook 02 takes about 20 seconds.
-
-## Validation
-
-Validation is graded explicitly per the course rubric. It lives in three places:
-
-1. **Section VII of `report/report.pdf`** — the "Validation and Limitations" section reports (a) that the linear-system solution of πQ=0 reduces to the closed-form geometric distribution at θ=0 to absolute tolerance 10⁻¹⁰, (b) that the greedy non-increasing-returns invariant holds at every step of every reported run (zero violations), and (c) the goodness-of-fit table for exponential inter-arrivals (9 of 10 streams reject — interpreted as genuine within-window non-stationarity and presented as a known modelling limitation rather than a positive result).
-2. **`tests/`** — 47 automated tests covering the CTMC math (`test_ctmc.py`) and the optimisation solver (`test_optimization.py`). Run with `uv run pytest`.
-3. **`notebooks/01_NOTES.md` and `notebooks/02_NOTES.md`** — narrative decision logs that flag every assumption made and every sensitivity check performed.
 
 ## Headline numbers (for quick reference)
 

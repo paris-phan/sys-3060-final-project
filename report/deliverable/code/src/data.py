@@ -8,6 +8,8 @@ Responsibilities:
     * Filter trips to a weekday hour window (e.g. 7:00-10:00 AM).
     * Estimate per-station withdrawal / deposit rates per hour.
     
+    # Citation
+
     Developed alongside Claude Code (Opus 4.6)
 """
 
